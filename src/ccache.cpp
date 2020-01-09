@@ -409,14 +409,19 @@ guess_compiler(const char* path)
 {
   string_view name = Util::base_name(path);
   enum guessed_compiler result = GUESSED_UNKNOWN;
-  if (name == "clang") {
+  if (name == "clang" || name == "clang.exe" ||
+      name == "clang++" || name == "clang++.exe") {
     result = GUESSED_CLANG;
-  } else if (name == "gcc" || name == "g++") {
+  } else if (name == "gcc" || name == "gcc.exe" ||
+             name == "g++" || name == "g++.exe") {
     result = GUESSED_GCC;
   } else if (name == "nvcc") {
     result = GUESSED_NVCC;
   } else if (name == "pump" || name == "distcc-pump") {
     result = GUESSED_PUMP;
+  } else if (name == "cl" || name == "cl.exe" ||
+             name == "clang-cl" || name == "clang-cl.exe") {
+    result = GUESSED_MSVC;
   }
   return result;
 }
@@ -1137,8 +1142,14 @@ to_cache(struct args* args,
          struct args* depend_extra_args,
          struct hash* depend_mode_hash)
 {
-  args_add(args, "-o");
-  args_add(args, output_obj);
+  if (guessed_compiler == GUESSED_MSVC) {
+    char *fo = format("-Fo%s", output_obj);
+    args_add(args, fo);
+    free(fo);
+  } else {
+    args_add(args, "-o");
+    args_add(args, output_obj);
+  }
 
   if (g_config.hard_link()) {
     // Workaround for Clang bug where it overwrites an existing object file
@@ -1223,9 +1234,72 @@ to_cache(struct args* args,
     failed();
   }
 
+  // MSVC compiler always print the input file name to stdout,
+  // plus parts of the warnings/error messages.
+  // So we have to fusion that into stderr...
+  // Transform \r\n into \n. This way ninja won't produce empty newlines
+  // for the /showIncludes argument.
+  if (guessed_compiler == GUESSED_MSVC) {
+    char *tmp_stderr2 = format("%s.2", tmp_stderr);
+    if (x_rename(tmp_stderr, tmp_stderr2)) {
+      cc_log("Failed to rename %s to %s: %s", tmp_stderr, tmp_stderr2,
+             strerror(errno));
+      stats_update(STATS_ERROR);
+      failed();
+    }
+
+    std::ofstream result_stream;
+
+    std::vector<char> output_buffer(READ_BUFFER_SIZE);
+    result_stream.rdbuf()->pubsetbuf(output_buffer.data(), output_buffer.size());
+
+    result_stream.open(tmp_stderr, std::ios_base::binary);
+    if (!result_stream.is_open()) {
+      cc_log("Failed opening %s: %s", tmp_stderr, strerror(errno));
+      stats_update(STATS_ERROR);
+      failed();
+    }
+
+    std::ostreambuf_iterator<char> to(result_stream);
+    for (char* file : {tmp_stdout, tmp_stderr2}) {
+      std::ifstream file_stream;
+
+      std::vector<char> read_buffer(READ_BUFFER_SIZE);
+      file_stream.rdbuf()->pubsetbuf(read_buffer.data(), read_buffer.size());
+
+      file_stream.open(file, std::ios_base::binary);
+      if (!file_stream.is_open()) {
+        cc_log("Failed opening %s: %s", file, strerror(errno));
+        stats_update(STATS_ERROR);
+        failed();
+      }
+
+      std::istreambuf_iterator<char> from(file_stream);
+      for (; from != std::istreambuf_iterator<char>(); ++from, ++to) {
+        if (*from != '\r') {
+          *to = *from;
+        } else if (++from != std::istreambuf_iterator<char>()) {
+          *to = (*from == '\n') ? '\n' : '\r';
+        }
+      }
+    }
+
+    result_stream.close();
+    if (!result_stream.good()) {
+      cc_log("Failed at writing data into %s: %s", tmp_stderr, strerror(errno));
+      stats_update(STATS_ERROR);
+      failed();
+    }
+
+    tmp_unlink(tmp_stderr2);
+    free(tmp_stderr2);
+  }
+
   // distcc-pump outputs lines like this:
   // __________Using # distcc servers in pump mode
-  if (st.size() != 0 && guessed_compiler != GUESSED_PUMP) {
+  if (st.size() != 0 &&
+      guessed_compiler != GUESSED_PUMP &&
+      guessed_compiler != GUESSED_MSVC) {
     cc_log("Compiler produced stdout");
     stats_update(STATS_STDOUT);
     tmp_unlink(tmp_stdout);
@@ -2322,7 +2396,7 @@ cc_process_args(ArgsInfo& args_info,
     }
 
     // Special case for -E.
-    if (str_eq(argv[i], "-E")) {
+    if (str_eq(argv[i], "-E") || str_eq(argv[i], "/E")) {
       stats_update(STATS_PREPROCESSING);
       return false;
     }
@@ -2476,7 +2550,7 @@ cc_process_args(ArgsInfo& args_info,
     }
 
     // We must have -c.
-    if (str_eq(argv[i], "-c")) {
+    if (str_eq(argv[i], "-c") || str_eq(argv[i], "/c")) {
       found_c_opt = true;
       continue;
     }
@@ -2534,6 +2608,12 @@ cc_process_args(ArgsInfo& args_info,
       continue;
     }
 
+    // MSVC /Fo with no space.
+    if (str_startswith(argv[i], "/Fo") && guessed_compiler == GUESSED_MSVC) {
+      args_info.output_obj = make_relative_path(&argv[i][3]);
+      continue;
+    }
+
     if (str_startswith(argv[i], "-fdebug-prefix-map=")
         || str_startswith(argv[i], "-ffile-prefix-map=")) {
       args_info.debug_prefix_maps = static_cast<char**>(
@@ -2581,7 +2661,8 @@ cc_process_args(ArgsInfo& args_info,
 
     // These options require special handling, because they behave differently
     // with gcc -E, when the output file is not specified.
-    if (str_eq(argv[i], "-MD") || str_eq(argv[i], "-MMD")) {
+    if ((str_eq(argv[i], "-MD") || str_eq(argv[i], "-MMD")) &&
+         guessed_compiler != GUESSED_MSVC) {
       args_info.generating_dependencies = true;
       args_add(dep_args, argv[i]);
       continue;
@@ -2909,7 +2990,8 @@ cc_process_args(ArgsInfo& args_info,
 
     // Same as above but options with concatenated argument beginning with a
     // slash.
-    if (argv[i][0] == '-') {
+    if (argv[i][0] == '-' ||
+       (guessed_compiler == GUESSED_MSVC && argv[i][0] == '/')) {
       char* slash_pos = strchr(argv[i], '/');
       if (slash_pos) {
         char* option = x_strndup(argv[i], slash_pos - argv[i]);
@@ -2951,7 +3033,8 @@ cc_process_args(ArgsInfo& args_info,
     }
 
     // Other options.
-    if (argv[i][0] == '-') {
+    if (argv[i][0] == '-' ||
+       (guessed_compiler == GUESSED_MSVC && argv[i][0] == '/')) {
       if (compopt_affects_cpp(argv[i]) || compopt_prefix_affects_cpp(argv[i])) {
         args_add(cpp_args, argv[i]);
       } else {

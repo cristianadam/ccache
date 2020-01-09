@@ -80,7 +80,7 @@ base_name(string_view path)
   size_t n = path.rfind('/');
 #ifdef _WIN32
   size_t n2 = path.rfind('\\');
-  if (n2 != std::string::npos && n2 > n) {
+  if (n2 != std::string::npos && (n == std::string::npos || n2 > n)) {
     n = n2;
   }
 #endif
