@@ -19,9 +19,9 @@
 #include "Config.hpp"
 
 #include "AtomicFile.hpp"
-#include "Error.hpp"
 #include "Util.hpp"
 #include "ccache.hpp"
+#include "exceptions.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -33,8 +33,6 @@
 
 using nonstd::nullopt;
 using nonstd::optional;
-
-Config g_config;
 
 namespace {
 
@@ -150,9 +148,8 @@ const std::unordered_map<std::string, std::string> k_env_variable_table = {
   {"UMASK", "umask"},
 };
 
-typedef std::function<void(
-  const std::string& line, const std::string& key, const std::string& value)>
-  ConfigLineHandler;
+using ConfigLineHandler = std::function<void(
+  const std::string& line, const std::string& key, const std::string& value)>;
 
 bool
 parse_bool(const std::string& value,
@@ -365,7 +362,7 @@ parse_unsigned(const std::string& value)
 void
 verify_absolute_path(const std::string& value)
 {
-  if (!is_absolute_path(value.c_str())) {
+  if (!Util::is_absolute_path(value)) {
     throw Error(fmt::format("not an absolute path: \"{}\"", value));
   }
 }
@@ -653,15 +650,11 @@ Config::set_value_in_file(const std::string& path,
 }
 
 void
-Config::clear_and_reset()
-{
-  *this = Config();
-}
-
-void
 Config::visit_items(const ItemVisitor& item_visitor) const
 {
   std::vector<std::string> keys;
+  keys.reserve(k_config_key_table.size());
+
   for (const auto& item : k_config_key_table) {
     keys.emplace_back(item.first);
   }
@@ -691,11 +684,12 @@ Config::set_item(const std::string& key,
     m_base_dir = parse_env_string(value);
     if (!m_base_dir.empty()) { // The empty string means "disable"
       verify_absolute_path(m_base_dir);
+      m_base_dir = Util::normalize_absolute_path(m_base_dir);
     }
     break;
 
   case ConfigItem::cache_dir:
-    m_cache_dir = parse_env_string(value);
+    set_cache_dir(parse_env_string(value));
     break;
 
   case ConfigItem::cache_dir_levels:
@@ -828,6 +822,7 @@ Config::set_item(const std::string& key,
 
   case ConfigItem::temporary_dir:
     m_temporary_dir = parse_env_string(value);
+    m_temporary_dir_configured_explicitly = true;
     break;
 
   case ConfigItem::umask:
@@ -836,4 +831,17 @@ Config::set_item(const std::string& key,
   }
 
   m_origins.emplace(key, origin);
+}
+
+void
+Config::check_key_tables_consistency()
+{
+  for (const auto& item : k_env_variable_table) {
+    if (k_config_key_table.find(item.second) == k_config_key_table.end()) {
+      throw Error(fmt::format(
+        "env var {} mapped to {} which is missing from k_config_key_table",
+        item.first,
+        item.second));
+    }
+  }
 }

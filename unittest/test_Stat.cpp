@@ -18,14 +18,33 @@
 
 #include "../src/Stat.hpp"
 #include "../src/Util.hpp"
+#include "TestUtil.hpp"
 
 #include "third_party/catch.hpp"
 
 #include <unistd.h>
 
 using Catch::Equals;
+using TestUtil::TestContext;
 
-TEST_CASE("Constructor")
+TEST_CASE("Default constructor")
+{
+  Stat stat;
+  CHECK(!stat);
+  CHECK(stat.error_number() == -1);
+  CHECK(stat.device() == 0);
+  CHECK(stat.inode() == 0);
+  CHECK(stat.mode() == 0);
+  CHECK(stat.ctime() == 0);
+  CHECK(stat.mtime() == 0);
+  CHECK(stat.size() == 0);
+  CHECK(stat.size_on_disk() == 0);
+  CHECK(!stat.is_directory());
+  CHECK(!stat.is_regular());
+  CHECK(!stat.is_symlink());
+}
+
+TEST_CASE("Named constructors")
 {
   CHECK(!Stat::stat("does_not_exist"));
   CHECK(!Stat::stat("does_not_exist", Stat::OnError::ignore));
@@ -33,6 +52,27 @@ TEST_CASE("Constructor")
   CHECK_THROWS_WITH(
     Stat::stat("does_not_exist", Stat::OnError::throw_error),
     Equals("failed to stat does_not_exist: No such file or directory"));
+}
+
+TEST_CASE("Same i-node as")
+{
+  TestContext test_context;
+
+  Util::write_file("a", "");
+  Util::write_file("b", "");
+  auto a_stat = Stat::stat("a");
+  auto b_stat = Stat::stat("b");
+
+  CHECK(a_stat.same_inode_as(a_stat));
+#ifdef _WIN32 // no i-node concept
+  (void)b_stat;
+#else
+  CHECK(!a_stat.same_inode_as(b_stat));
+#endif
+
+  Util::write_file("a", "change size");
+  auto new_a_stat = Stat::stat("a");
+  CHECK(new_a_stat.same_inode_as(a_stat));
 }
 
 TEST_CASE("Return values when file is missing")
@@ -54,6 +94,8 @@ TEST_CASE("Return values when file is missing")
 
 TEST_CASE("Return values when file exists")
 {
+  TestContext test_context;
+
   Util::write_file("file", "1234567");
 
   auto stat = Stat::stat("file");
@@ -80,7 +122,8 @@ TEST_CASE("Return values when file exists")
 
 TEST_CASE("Directory")
 {
-  rmdir("directory");
+  TestContext test_context;
+
   REQUIRE(mkdir("directory", 0456) == 0);
   auto stat = Stat::stat("directory");
 
@@ -94,6 +137,8 @@ TEST_CASE("Directory")
 #ifndef _WIN32
 TEST_CASE("Symlinks")
 {
+  TestContext test_context;
+
   Util::write_file("file", "1234567");
 
   SECTION("file lstat")
@@ -118,7 +163,6 @@ TEST_CASE("Symlinks")
 
   SECTION("symlink lstat")
   {
-    unlink("symlink");
     REQUIRE(symlink("file", "symlink") == 0);
     auto stat = Stat::lstat("symlink", Stat::OnError::ignore);
     CHECK(stat);
@@ -130,7 +174,6 @@ TEST_CASE("Symlinks")
 
   SECTION("symlink stat")
   {
-    unlink("symlink");
     REQUIRE(symlink("file", "symlink") == 0);
     auto stat = Stat::stat("symlink", Stat::OnError::ignore);
     CHECK(stat);

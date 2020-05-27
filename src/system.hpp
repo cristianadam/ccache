@@ -111,14 +111,3 @@ extern char** environ;
 #ifndef O_BINARY
 #  define O_BINARY 0
 #endif
-
-#ifdef _WIN32
-char* win32argvtos(char* prefix, char** argv, int* length);
-char* win32getshell(char* path);
-int win32execute(
-  char* path, char** argv, int doreturn, int fd_stdout, int fd_stderr);
-void add_exe_ext_if_no_to_fullpath(char* full_path_win_ext,
-                                   size_t max_size,
-                                   const char* ext,
-                                   const char* path);
-#endif

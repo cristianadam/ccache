@@ -31,7 +31,7 @@ quiet := $(v_at_$(V))
 Q=$(if $(quiet),@)
 
 non_third_party_sources = \
-    src/ArgsInfo.cpp \
+    src/Args.cpp \
     src/AtomicFile.cpp \
     src/CacheEntryReader.cpp \
     src/CacheEntryWriter.cpp \
@@ -39,31 +39,35 @@ non_third_party_sources = \
     src/Compression.cpp \
     src/Compressor.cpp \
     src/Config.cpp \
+    src/Context.cpp \
+    src/Counters.cpp \
     src/Decompressor.cpp \
+    src/Lockfile.cpp \
+    src/MiniTrace.cpp \
     src/NullCompressor.cpp \
     src/NullDecompressor.cpp \
     src/ProgressBar.cpp \
+    src/SignalHandler.cpp \
     src/Stat.cpp \
+    src/ThreadPool.cpp \
     src/Util.cpp \
     src/ZstdCompressor.cpp \
     src/ZstdDecompressor.cpp \
-    src/args.cpp \
+    src/argprocessing.cpp \
     src/ccache.cpp \
     src/cleanup.cpp \
     src/compopt.cpp \
     src/compress.cpp \
-    src/counters.cpp \
     src/execute.cpp \
-    src/exitfn.cpp \
     src/hash.cpp \
     src/hashutil.cpp \
     src/language.cpp \
-    src/legacy_globals.cpp \
     src/legacy_util.cpp \
-    src/lockfile.cpp \
+    src/logging.cpp \
     src/manifest.cpp \
     src/result.cpp \
-    src/stats.cpp
+    src/stats.cpp \
+    src/win32compat.cpp
 generated_sources = \
     src/version.cpp
 third_party_sources = \
@@ -79,30 +83,26 @@ non_third_party_objs = $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(non_third_p
 ccache_sources = src/main.cpp $(base_sources)
 ccache_objs = $(patsubst %.c, %.o, $(patsubst %.cpp, %.o, $(ccache_sources)))
 
+test_suites += unittest/test_Args.cpp
 test_suites += unittest/test_AtomicFile.cpp
 test_suites += unittest/test_Checksum.cpp
 test_suites += unittest/test_Compression.cpp
 test_suites += unittest/test_Config.cpp
 test_suites += unittest/test_FormatNonstdStringView.cpp
+test_suites += unittest/test_Lockfile.cpp
 test_suites += unittest/test_NullCompression.cpp
-test_suites += unittest/test_ScopeGuard.cpp
 test_suites += unittest/test_Stat.cpp
 test_suites += unittest/test_Util.cpp
 test_suites += unittest/test_ZstdCompression.cpp
-test_suites += unittest/test_args.cpp
-test_suites += unittest/test_argument_processing.cpp
+test_suites += unittest/test_argprocessing.cpp
 test_suites += unittest/test_compopt.cpp
-test_suites += unittest/test_counters.cpp
 test_suites += unittest/test_hash.cpp
 test_suites += unittest/test_hashutil.cpp
 test_suites += unittest/test_legacy_util.cpp
-test_suites += unittest/test_lockfile.cpp
-test_suites += unittest/test_stats.cpp
 
+test_sources += unittest/TestUtil.cpp
 test_sources += unittest/catch2_tests.cpp
-test_sources += unittest/framework.cpp
 test_sources += unittest/main.cpp
-test_sources += unittest/util.cpp
 test_sources += $(test_suites)
 test_objs = $(test_sources:.cpp=.o)
 

@@ -16,15 +16,18 @@
 // this program; if not, write to the Free Software Foundation, Inc., 51
 // Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-// This file contains tests for functions in util.c.
-
 #include "../src/execute.hpp"
 #include "../src/legacy_util.hpp"
-#include "framework.hpp"
 
-TEST_SUITE(legacy_util)
+#include "third_party/catch.hpp"
 
-TEST(x_dirname)
+#define CHECK_STR_EQ_FREE2(a, b)                                               \
+  do {                                                                         \
+    CHECK(strcmp((a), (b)) == 0);                                              \
+    free(b);                                                                   \
+  } while (false)
+
+TEST_CASE("x_dirname")
 {
   CHECK_STR_EQ_FREE2(".", x_dirname("foo.c"));
   CHECK_STR_EQ_FREE2(".", x_dirname(""));
@@ -35,52 +38,7 @@ TEST(x_dirname)
   CHECK_STR_EQ_FREE2("dir1/dir2", x_dirname("dir1/dir2/"));
 }
 
-TEST(common_dir_prefix_length)
-{
-  CHECK_INT_EQ(0, common_dir_prefix_length("", ""));
-  CHECK_INT_EQ(0, common_dir_prefix_length("/", "/"));
-  CHECK_INT_EQ(0, common_dir_prefix_length("/", "/b"));
-  CHECK_INT_EQ(0, common_dir_prefix_length("/a", "/b"));
-  CHECK_INT_EQ(2, common_dir_prefix_length("/a", "/a"));
-  CHECK_INT_EQ(2, common_dir_prefix_length("/a", "/a/b"));
-  CHECK_INT_EQ(2, common_dir_prefix_length("/a/b", "/a/c"));
-  CHECK_INT_EQ(4, common_dir_prefix_length("/a/b", "/a/b"));
-  CHECK_INT_EQ(2, common_dir_prefix_length("/a/bc", "/a/b"));
-  CHECK_INT_EQ(2, common_dir_prefix_length("/a/b", "/a/bc"));
-}
-
-TEST(get_relative_path)
-{
-#ifdef _WIN32
-  CHECK_STR_EQ_FREE2("a", get_relative_path("C:/doesn't matter", "a"));
-  CHECK_STR_EQ_FREE2("a/b", get_relative_path("C:/doesn't matter", "a/b"));
-  CHECK_STR_EQ_FREE2(".", get_relative_path("C:/a", "C:/a"));
-  CHECK_STR_EQ_FREE2("..", get_relative_path("C:/a/b", "C:/a"));
-  CHECK_STR_EQ_FREE2("b", get_relative_path("C:/a", "C:/a/b"));
-  CHECK_STR_EQ_FREE2("b/c", get_relative_path("C:/a", "C:/a/b/c"));
-  CHECK_STR_EQ_FREE2("../c", get_relative_path("C:/a/b", "C:/a/c"));
-  CHECK_STR_EQ_FREE2("../c/d", get_relative_path("C:/a/b", "C:/a/c/d"));
-  CHECK_STR_EQ_FREE2("../../c/d", get_relative_path("C:/a/b/c", "C:/a/c/d"));
-  CHECK_STR_EQ_FREE2("../..", get_relative_path("C:/a/b", "C:/"));
-  CHECK_STR_EQ_FREE2("../../c", get_relative_path("C:/a/b", "C:/c"));
-  CHECK_STR_EQ_FREE2("a/b", get_relative_path("C:/", "C:/a/b"));
-#else
-  CHECK_STR_EQ_FREE2("a", get_relative_path("/doesn't matter", "a"));
-  CHECK_STR_EQ_FREE2("a/b", get_relative_path("/doesn't matter", "a/b"));
-  CHECK_STR_EQ_FREE2(".", get_relative_path("/a", "/a"));
-  CHECK_STR_EQ_FREE2("..", get_relative_path("/a/b", "/a"));
-  CHECK_STR_EQ_FREE2("b", get_relative_path("/a", "/a/b"));
-  CHECK_STR_EQ_FREE2("b/c", get_relative_path("/a", "/a/b/c"));
-  CHECK_STR_EQ_FREE2("../c", get_relative_path("/a/b", "/a/c"));
-  CHECK_STR_EQ_FREE2("../c/d", get_relative_path("/a/b", "/a/c/d"));
-  CHECK_STR_EQ_FREE2("../../c/d", get_relative_path("/a/b/c", "/a/c/d"));
-  CHECK_STR_EQ_FREE2("../..", get_relative_path("/a/b", "/"));
-  CHECK_STR_EQ_FREE2("../../c", get_relative_path("/a/b", "/c"));
-  CHECK_STR_EQ_FREE2("a/b", get_relative_path("/", "/a/b"));
-#endif
-}
-
-TEST(subst_env_in_string)
+TEST_CASE("subst_env_in_string")
 {
   char* errmsg;
 
@@ -110,7 +68,7 @@ TEST(subst_env_in_string)
   CHECK_STR_EQ_FREE2("syntax error: missing '}' after \"FOO\"", errmsg);
 }
 
-TEST(format_human_readable_size)
+TEST_CASE("format_human_readable_size")
 {
   CHECK_STR_EQ_FREE2("0.0 MB", format_human_readable_size(0));
   CHECK_STR_EQ_FREE2("0.0 MB", format_human_readable_size(49));
@@ -124,7 +82,7 @@ TEST(format_human_readable_size)
                      format_human_readable_size(17.11 * 1000 * 1000 * 1000));
 }
 
-TEST(format_parsable_size_with_suffix)
+TEST_CASE("format_parsable_size_with_suffix")
 {
   CHECK_STR_EQ_FREE2("0", format_parsable_size_with_suffix(0));
   CHECK_STR_EQ_FREE2("42000", format_parsable_size_with_suffix(42 * 1000));
@@ -138,7 +96,7 @@ TEST(format_parsable_size_with_suffix)
     "17.1G", format_parsable_size_with_suffix(17.11 * 1000 * 1000 * 1000));
 }
 
-TEST(parse_size_with_suffix)
+TEST_CASE("parse_size_with_suffix")
 {
   uint64_t size;
   size_t i;
@@ -165,19 +123,19 @@ TEST(parse_size_with_suffix)
   };
 
   for (i = 0; i < ARRAY_SIZE(sizes); ++i) {
-    CHECKM(parse_size_with_suffix(sizes[i].size, &size), sizes[i].size);
-    CHECK_INT_EQ(sizes[i].expected, size);
+    CHECK(parse_size_with_suffix(sizes[i].size, &size));
+    CHECK(size == sizes[i].expected);
   }
 }
 
-TEST(format_command)
+TEST_CASE("format_command")
 {
-  const char* argv[] = {"foo", "bar", NULL};
+  const char* argv[] = {"foo", "bar", nullptr};
 
   CHECK_STR_EQ_FREE2("foo bar\n", format_command(argv));
 }
 
-TEST(format_hex)
+TEST_CASE("format_hex")
 {
   uint8_t none[] = "";
   uint8_t text[4] = "foo"; // incl. NUL
@@ -185,33 +143,11 @@ TEST(format_hex)
   char result[2 * sizeof(data) + 1] = ".";
 
   format_hex(none, 0, result);
-  CHECK_STR_EQ("", result);
+  CHECK(strcmp("", result) == 0);
 
   format_hex(text, sizeof(text), result);
-  CHECK_STR_EQ("666f6f00", result);
+  CHECK(strcmp("666f6f00", result) == 0);
 
   format_hex(data, sizeof(data), result);
-  CHECK_STR_EQ("00010203", result);
+  CHECK(strcmp("00010203", result) == 0);
 }
-
-TEST(from_cstr)
-{
-  char* cstr1 = x_strdup("foo");
-  const char* cstr2 = "bar";
-  const char* cstr3 = nullptr;
-  const char* cstr4 = "";
-
-  std::string str1 = from_cstr(cstr1);
-  std::string str2 = from_cstr(cstr2);
-  std::string str3 = from_cstr(cstr3);
-  std::string str4 = from_cstr(cstr4);
-
-  CHECK(str1 == "foo");
-  CHECK(str2 == "bar");
-  CHECK(str3 == "");
-  CHECK(str4 == "");
-
-  free(cstr1);
-}
-
-TEST_SUITE_END

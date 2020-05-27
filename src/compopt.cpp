@@ -50,7 +50,7 @@ struct compopt
 };
 
 static const struct compopt compopts[] = {
-  {"--analyze", TOO_HARD},                            // clang
+  {"--analyze", TOO_HARD},                            // Clang
   {"--compiler-bindir", AFFECTS_CPP | TAKES_ARG},     // nvcc
   {"--libdevice-directory", AFFECTS_CPP | TAKES_ARG}, // nvcc
   {"--output-directory", AFFECTS_CPP | TAKES_ARG},    // nvcc
@@ -85,7 +85,7 @@ static const struct compopt compopts[] = {
   {"-Xlinker", TAKES_ARG | TAKES_CONCAT_ARG | AFFECTS_COMP},
   {"-Xpreprocessor", AFFECTS_CPP | TOO_HARD_DIRECT | TAKES_ARG},
   {"-all_load", AFFECTS_COMP},
-  {"-analyze", TOO_HARD}, // clang
+  {"-analyze", TOO_HARD}, // Clang
   {"-arch", TAKES_ARG},
   {"-aux-info", TAKES_ARG},
   {"-b", TAKES_ARG},
@@ -95,7 +95,7 @@ static const struct compopt compopts[] = {
   {"-fno-working-directory", AFFECTS_CPP},
   {"-fplugin=libcc1plugin", TOO_HARD}, // interaction with GDB
   {"-frepo", TOO_HARD},
-  {"-ftime-trace", TOO_HARD}, // clang
+  {"-ftime-trace", TOO_HARD}, // Clang
   {"-fworking-directory", AFFECTS_CPP},
   {"-gtoggle", TOO_HARD},
   {"-idirafter", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH},
@@ -128,17 +128,17 @@ static const struct compopt compopts[] = {
   {"-stdlib=", AFFECTS_CPP | TAKES_CONCAT_ARG},
   {"-trigraphs", AFFECTS_CPP},
   {"-u", TAKES_ARG | TAKES_CONCAT_ARG},
-  {"/AI", TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH}, // msvc
-  {"/D", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG}, // msvc
-  {"/E", TOO_HARD}, // msvc
-  {"/EP", TOO_HARD}, // msvc
+  {"/AI", TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH},               // msvc
+  {"/D", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG},               // msvc
+  {"/E", TOO_HARD},                                                 // msvc
+  {"/EP", TOO_HARD},                                                // msvc
   {"/FI", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH}, // msvc
   {"/FU", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH}, // msvc
-  {"/I", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH}, // msvc
-  {"/L", TAKES_ARG}, // msvc
-  {"/P", TOO_HARD}, // msvc
-  {"/U", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG}, // msvc
-  {"/u", AFFECTS_CPP}, // msvc
+  {"/I", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG | TAKES_PATH},  // msvc
+  {"/L", TAKES_ARG},                                                // msvc
+  {"/P", TOO_HARD},                                                 // msvc
+  {"/U", AFFECTS_CPP | TAKES_ARG | TAKES_CONCAT_ARG},               // msvc
+  {"/u", AFFECTS_CPP},                                              // msvc
 };
 
 static int
@@ -158,10 +158,10 @@ compare_prefix_compopts(const void* key1, const void* key2)
 }
 
 static const struct compopt*
-find(const char* option)
+find(const std::string& option)
 {
   struct compopt key;
-  key.name = option;
+  key.name = option.c_str();
   void* result = bsearch(&key,
                          compopts,
                          ARRAY_SIZE(compopts),
@@ -171,10 +171,10 @@ find(const char* option)
 }
 
 static const struct compopt*
-find_prefix(const char* option)
+find_prefix(const std::string& option)
 {
   struct compopt key;
-  key.name = option;
+  key.name = option.c_str();
   void* result = bsearch(&key,
                          compopts,
                          ARRAY_SIZE(compopts),
@@ -185,20 +185,18 @@ find_prefix(const char* option)
 
 // Runs fn on the first two characters of option.
 bool
-compopt_short(bool (*fn)(const char*), const char* option)
+compopt_short(bool (*fn)(const std::string&), const std::string& option)
 {
-  char* short_opt = x_strndup(option, 2);
-  bool retval = fn(short_opt);
-  free(short_opt);
+  bool retval = fn(option.substr(0, 2));
   return retval;
 }
 
-// Used by unittest/test_compopt.c.
-bool compopt_verify_sortedness_and_flags(void);
+// Used by unittest/test_compopt.cpp.
+bool compopt_verify_sortedness_and_flags();
 
 // For test purposes.
 bool
-compopt_verify_sortedness_and_flags(void)
+compopt_verify_sortedness_and_flags()
 {
   for (size_t i = 0; i < ARRAY_SIZE(compopts); i++) {
     if (compopts[i].type & TOO_HARD && compopts[i].type & TAKES_CONCAT_ARG) {
@@ -224,49 +222,49 @@ compopt_verify_sortedness_and_flags(void)
 }
 
 bool
-compopt_affects_cpp(const char* option)
+compopt_affects_cpp(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & AFFECTS_CPP);
 }
 
 bool
-compopt_affects_comp(const char* option)
+compopt_affects_comp(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & AFFECTS_COMP);
 }
 
 bool
-compopt_too_hard(const char* option)
+compopt_too_hard(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & TOO_HARD);
 }
 
 bool
-compopt_too_hard_for_direct_mode(const char* option)
+compopt_too_hard_for_direct_mode(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & TOO_HARD_DIRECT);
 }
 
 bool
-compopt_takes_path(const char* option)
+compopt_takes_path(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & TAKES_PATH);
 }
 
 bool
-compopt_takes_arg(const char* option)
+compopt_takes_arg(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & TAKES_ARG);
 }
 
 bool
-compopt_takes_concat_arg(const char* option)
+compopt_takes_concat_arg(const std::string& option)
 {
   const struct compopt* co = find(option);
   return co && (co->type & TAKES_CONCAT_ARG);
@@ -275,7 +273,7 @@ compopt_takes_concat_arg(const char* option)
 // Determines if the prefix of the option matches any option and affects the
 // preprocessor.
 bool
-compopt_prefix_affects_cpp(const char* option)
+compopt_prefix_affects_cpp(const std::string& option)
 {
   // Prefix options have to take concatenated args.
   const struct compopt* co = find_prefix(option);
@@ -285,7 +283,7 @@ compopt_prefix_affects_cpp(const char* option)
 // Determines if the prefix of the option matches any option and affects the
 // preprocessor.
 bool
-compopt_prefix_affects_comp(const char* option)
+compopt_prefix_affects_comp(const std::string& option)
 {
   // Prefix options have to take concatenated args.
   const struct compopt* co = find_prefix(option);

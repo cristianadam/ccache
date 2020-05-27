@@ -23,12 +23,13 @@
 #include "CacheEntryWriter.hpp"
 #include "Checksum.hpp"
 #include "Config.hpp"
+#include "Context.hpp"
 #include "File.hpp"
 #include "StdMakeUnique.hpp"
 #include "ccache.hpp"
 #include "hash.hpp"
 #include "hashutil.hpp"
-#include "legacy_globals.hpp"
+#include "logging.hpp"
 
 // Manifest data format
 // ====================
@@ -176,6 +177,7 @@ struct ManifestData
   add_result_entry(
     const struct digest& result_digest,
     const std::unordered_map<std::string, digest>& included_files,
+    time_t time_of_compilation,
     bool save_timestamp)
   {
     std::unordered_map<std::string, uint32_t /*index*/> mf_files;
@@ -189,9 +191,15 @@ struct ManifestData
     }
 
     std::vector<uint32_t> file_info_indexes;
+    file_info_indexes.reserve(included_files.size());
+
     for (const auto& item : included_files) {
-      file_info_indexes.push_back(get_file_info_index(
-        item.first, item.second, mf_files, mf_file_infos, save_timestamp));
+      file_info_indexes.push_back(get_file_info_index(item.first,
+                                                      item.second,
+                                                      mf_files,
+                                                      mf_file_infos,
+                                                      time_of_compilation,
+                                                      save_timestamp));
     }
 
     results.push_back(ResultEntry{std::move(file_info_indexes), result_digest});
@@ -204,6 +212,7 @@ private:
     const digest& digest,
     const std::unordered_map<std::string, uint32_t>& mf_files,
     const std::unordered_map<FileInfo, uint32_t>& mf_file_infos,
+    time_t time_of_compilation,
     bool save_timestamp)
   {
     struct FileInfo fi;
@@ -324,19 +333,21 @@ read_manifest(const std::string& path, FILE* dump_stream = nullptr)
 }
 
 static bool
-write_manifest(const std::string& path, const ManifestData& mf)
+write_manifest(const Config& config,
+               const std::string& path,
+               const ManifestData& mf)
 {
   uint64_t payload_size = 0;
   payload_size += 4; // n_files
-  for (size_t i = 0; i < mf.files.size(); ++i) {
-    payload_size += 2 + mf.files[i].length();
+  for (const auto& file : mf.files) {
+    payload_size += 2 + file.length();
   }
   payload_size += 4; // n_file_infos
   payload_size += mf.file_infos.size() * (4 + DIGEST_SIZE + 8 + 8 + 8);
   payload_size += 4; // n_results
-  for (size_t i = 0; i < mf.results.size(); ++i) {
+  for (const auto& result : mf.results) {
     payload_size += 4; // n_file_info_indexes
-    payload_size += mf.results[i].file_info_indexes.size() * 4;
+    payload_size += result.file_info_indexes.size() * 4;
     payload_size += DIGEST_SIZE;
   }
 
@@ -344,31 +355,31 @@ write_manifest(const std::string& path, const ManifestData& mf)
   CacheEntryWriter writer(atomic_manifest_file.stream(),
                           k_manifest_magic,
                           k_manifest_version,
-                          Compression::type_from_config(),
-                          Compression::level_from_config(),
+                          Compression::type_from_config(config),
+                          Compression::level_from_config(config),
                           payload_size);
   writer.write<uint32_t>(mf.files.size());
-  for (uint32_t i = 0; i < mf.files.size(); ++i) {
-    writer.write<uint16_t>(mf.files[i].length());
-    writer.write(mf.files[i].data(), mf.files[i].length());
+  for (const auto& file : mf.files) {
+    writer.write<uint16_t>(file.length());
+    writer.write(file.data(), file.length());
   }
 
   writer.write<uint32_t>(mf.file_infos.size());
-  for (uint32_t i = 0; i < mf.file_infos.size(); ++i) {
-    writer.write<uint32_t>(mf.file_infos[i].index);
-    writer.write(mf.file_infos[i].digest.bytes, DIGEST_SIZE);
-    writer.write(mf.file_infos[i].fsize);
-    writer.write(mf.file_infos[i].mtime);
-    writer.write(mf.file_infos[i].ctime);
+  for (const auto& file_info : mf.file_infos) {
+    writer.write<uint32_t>(file_info.index);
+    writer.write(file_info.digest.bytes, DIGEST_SIZE);
+    writer.write(file_info.fsize);
+    writer.write(file_info.mtime);
+    writer.write(file_info.ctime);
   }
 
   writer.write<uint32_t>(mf.results.size());
-  for (uint32_t i = 0; i < mf.results.size(); ++i) {
-    writer.write<uint32_t>(mf.results[i].file_info_indexes.size());
-    for (uint32_t j = 0; j < mf.results[i].file_info_indexes.size(); ++j) {
-      writer.write(mf.results[i].file_info_indexes[j]);
+  for (const auto& result : mf.results) {
+    writer.write<uint32_t>(result.file_info_indexes.size());
+    for (uint32_t j = 0; j < result.file_info_indexes.size(); ++j) {
+      writer.write(result.file_info_indexes[j]);
     }
-    writer.write(mf.results[i].name.bytes, DIGEST_SIZE);
+    writer.write(result.name.bytes, DIGEST_SIZE);
   }
 
   writer.finalize();
@@ -377,14 +388,14 @@ write_manifest(const std::string& path, const ManifestData& mf)
 }
 
 static bool
-verify_result(const Config& config,
+verify_result(const Context& ctx,
               const ManifestData& mf,
               const ResultEntry& result,
               std::unordered_map<std::string, FileStats>& stated_files,
               std::unordered_map<std::string, digest>& hashed_files)
 {
-  for (uint32_t i = 0; i < result.file_info_indexes.size(); ++i) {
-    const auto& fi = mf.file_infos[result.file_info_indexes[i]];
+  for (uint32_t file_info_index : result.file_info_indexes) {
+    const auto& fi = mf.file_infos[file_info_index];
     const auto& path = mf.files[fi.index];
 
     auto stated_files_iter = stated_files.find(path);
@@ -407,16 +418,16 @@ verify_result(const Config& config,
 
     // Clang stores the mtime of the included files in the precompiled header,
     // and will error out if that header is later used without rebuilding.
-    if ((guessed_compiler == GUESSED_CLANG
-         || guessed_compiler == GUESSED_UNKNOWN)
-        && output_is_precompiled_header && fi.mtime != fs.mtime) {
+    if ((ctx.guessed_compiler == GuessedCompiler::clang
+         || ctx.guessed_compiler == GuessedCompiler::unknown)
+        && ctx.args_info.output_is_precompiled_header && fi.mtime != fs.mtime) {
       cc_log("Precompiled header includes %s, which has a new mtime",
              path.c_str());
       return false;
     }
 
-    if (config.sloppiness() & SLOPPY_FILE_STAT_MATCHES) {
-      if (!(config.sloppiness() & SLOPPY_FILE_STAT_MATCHES_CTIME)) {
+    if (ctx.config.sloppiness() & SLOPPY_FILE_STAT_MATCHES) {
+      if (!(ctx.config.sloppiness() & SLOPPY_FILE_STAT_MATCHES_CTIME)) {
         if (fi.mtime == fs.mtime && fi.ctime == fs.ctime) {
           cc_log("mtime/ctime hit for %s", path.c_str());
           continue;
@@ -436,7 +447,7 @@ verify_result(const Config& config,
     auto hashed_files_iter = hashed_files.find(path);
     if (hashed_files_iter == hashed_files.end()) {
       struct hash* hash = hash_init();
-      int ret = hash_source_code_file(config, hash, path.c_str());
+      int ret = hash_source_code_file(ctx.config, hash, path.c_str(), fs.size);
       if (ret & HASH_SOURCE_CODE_ERROR) {
         cc_log("Failed hashing %s", path.c_str());
         hash_free(hash);
@@ -464,7 +475,7 @@ verify_result(const Config& config,
 // Try to get the result name from a manifest file. Caller frees. Returns NULL
 // on failure.
 struct digest*
-manifest_get(const Config& config, const std::string& path)
+manifest_get(const Context& ctx, const std::string& path)
 {
   std::unique_ptr<ManifestData> mf;
   try {
@@ -473,7 +484,7 @@ manifest_get(const Config& config, const std::string& path)
       // Update modification timestamp to save files from LRU cleanup.
       update_mtime(path.c_str());
     } else {
-      cc_log("No such result file");
+      cc_log("No such manifest file");
       return nullptr;
     }
   } catch (const Error& e) {
@@ -485,10 +496,10 @@ manifest_get(const Config& config, const std::string& path)
   std::unordered_map<std::string, digest> hashed_files;
 
   // Check newest result first since it's a bit more likely to match.
-  struct digest* name = NULL;
+  struct digest* name = nullptr;
   for (uint32_t i = mf->results.size(); i > 0; i--) {
     if (verify_result(
-          config, *mf, mf->results[i - 1], stated_files, hashed_files)) {
+          ctx, *mf, mf->results[i - 1], stated_files, hashed_files)) {
       name = static_cast<digest*>(x_malloc(sizeof(digest)));
       *name = mf->results[i - 1].name;
       break;
@@ -501,9 +512,12 @@ manifest_get(const Config& config, const std::string& path)
 // Put the result name into a manifest file given a set of included files.
 // Returns true on success, otherwise false.
 bool
-manifest_put(const std::string& path,
+manifest_put(const Config& config,
+             const std::string& path,
              const struct digest& result_name,
              const std::unordered_map<std::string, digest>& included_files,
+
+             time_t time_of_compilation,
              bool save_timestamp)
 {
   // We don't bother to acquire a lock when writing the manifest to disk. A
@@ -546,10 +560,11 @@ manifest_put(const std::string& path,
     mf = std::make_unique<ManifestData>();
   }
 
-  mf->add_result_entry(result_name, included_files, save_timestamp);
+  mf->add_result_entry(
+    result_name, included_files, time_of_compilation, save_timestamp);
 
   try {
-    write_manifest(path, *mf);
+    write_manifest(config, path, *mf);
     return true;
   } catch (const Error& e) {
     cc_log("Error: %s", e.what());
@@ -593,8 +608,8 @@ manifest_dump(const std::string& path, FILE* stream)
     char name[DIGEST_STRING_BUFFER_SIZE];
     fmt::print(stream, "  {}:\n", i);
     fmt::print(stream, "    File info indexes:");
-    for (unsigned j = 0; j < mf->results[i].file_info_indexes.size(); ++j) {
-      fmt::print(stream, " {}", mf->results[i].file_info_indexes[j]);
+    for (uint32_t file_info_index : mf->results[i].file_info_indexes) {
+      fmt::print(stream, " {}", file_info_index);
     }
     fmt::print(stream, "\n");
     digest_as_string(&mf->results[i].name, name);

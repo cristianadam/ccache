@@ -17,9 +17,11 @@ SHELLCHECK = shellcheck
 SHELLCHECK_EXCLUDES = misc/shellcheck-excludes.txt
 TEST = test
 
+git := git --git-dir=$(srcdir)/.git
 version := \
-    $(shell (git --git-dir=$(srcdir)/.git describe --dirty || git --git-dir=$(srcdir)/.git describe || echo vunknown) \
-            2>/dev/null | sed -e 's/v//' -e 's/-/+/' -e 's/-/_/g')
+    $(shell ($(git) describe --exact-match \
+             || echo "$$($(git) rev-parse --abbrev-ref HEAD).$$($(git) rev-parse HEAD | cut -c1-8)") 2>/dev/null \
+            | sed -re 's/^v([0-9].+)/\1/')
 
 dist_dir = ccache-$(version)
 dist_archives = \
@@ -35,24 +37,23 @@ generated_docs = \
 built_dist_files = $(generated_sources) $(generated_docs)
 
 non_third_party_headers_without_cpp = \
+    src/ArgsInfo.hpp \
     src/Checksum.hpp \
-    src/Error.hpp \
     src/File.hpp \
     src/FormatNonstdStringView.hpp \
     src/NonCopyable.hpp \
     src/NullCompressor.hpp \
     src/NullDecompressor.hpp \
     src/ProgressBar.hpp \
-    src/ScopeGuard.hpp \
     src/Stat.hpp \
     src/StdMakeUnique.hpp \
     src/ThreadPool.hpp \
+    src/exceptions.hpp \
     src/macroskip.hpp \
-    src/system.hpp \
-    unittest/framework.hpp \
-    unittest/util.hpp
+    src/system.hpp
 
-non_third_party_headers = $(subst .cpp,.hpp,$(non_third_party_sources)) \
+non_third_party_headers = \
+    $(subst .cpp,.hpp,$(non_third_party_sources)) \
     $(non_third_party_headers_without_cpp)
 
 third_party_headers = \
@@ -105,8 +106,9 @@ dist_files = \
     $(addprefix $(srcdir)/, $(source_dist_files)) \
     $(built_dist_files)
 
-ifneq ($(shell sed 's/.*"\(.*\)".*/\1/' src/version.cpp 2>/dev/null),$(version))
-  $(shell echo 'extern const char CCACHE_VERSION[]; const char CCACHE_VERSION[] = "$(version)";' >src/version.cpp)
+ifneq ($(shell sed -n 's/.*"\(.*\)".*/\1/p' src/version.cpp 2>/dev/null),$(version))
+  $(shell echo 'extern const char CCACHE_VERSION[];' >src/version.cpp)
+  $(shell echo 'const char CCACHE_VERSION[] = "$(version)";' >>src/version.cpp)
 endif
 src/version.o: src/version.cpp
 
@@ -184,12 +186,12 @@ update-authors:
 
 .PHONY: check-syntax
 check-syntax:
-	$(CC) $(all_cppflags) -I. $(all_cxxflags) -S -o /dev/null $(CHK_SOURCES)
+	$(CC) $(all_cppflags) -I. $(filter-out -g% -O%,$(all_cxxflags)) -S -o /dev/null $(CHK_SOURCES)
 
 .PHONY: cppcheck
 cppcheck:
-	$(CPPCHECK) --suppressions-list=$(CPPCHECK_SUPPRESSIONS) \
-	  --inline-suppr -q --enable=all --force -I . \
+	cd $(srcdir) && $(CPPCHECK) --suppressions-list=$(CPPCHECK_SUPPRESSIONS) \
+	  --inline-suppr -q --enable=all --force -I $(CURDIR) \
 	  --template='cppcheck: warning: {id}:{file}:{line}: {message}' \
 	  $(non_third_party_sources) src/main.cpp $(test_sources)
 
@@ -199,7 +201,16 @@ shellcheck: test/suites/*.bash
 
 .PHONY: format
 format:
-	$(CLANG_FORMAT) -i $(non_third_party_headers) $(non_third_party_sources) $(test_sources)
+	@cd $(srcdir) && misc/format.sh
+
+# Not using parallel execution because target is most likely being run on non-interactive CI system,
+# so no user is waiting for immediate results, and it avoids possibly interleaved output.
+.PHONY: check_format
+check_format:
+	@[ -t 1 ] && export cf_diff_color="--color=always"; \
+	cd $(srcdir) && misc/check_format.sh || \
+	        { echo; echo "Error: Sources are not formatted with clang-format."; \
+	          echo 'Run "make format" or apply the above diff.'; echo; exit 1; } 1>&2
 
 # pip install compiledb
 compile_commands.json:

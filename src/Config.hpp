@@ -20,6 +20,7 @@
 
 #include "system.hpp"
 
+#include "NonCopyable.hpp"
 #include "legacy_util.hpp"
 
 #include "third_party/fmt/core.h"
@@ -31,9 +32,8 @@
 #include <unordered_map>
 
 class Config;
-extern Config g_config;
 
-class Config
+class Config : NonCopyable
 {
 public:
   Config() = default;
@@ -91,10 +91,9 @@ public:
   void set_primary_config_path(std::string path);
   void set_secondary_config_path(std::string path);
 
-  typedef std::function<void(const std::string& key,
-                             const std::string& value,
-                             const std::string& origin)>
-    ItemVisitor;
+  using ItemVisitor = std::function<void(const std::string& key,
+                                         const std::string& value,
+                                         const std::string& origin)>;
 
   // Set config values from a configuration file.
   //
@@ -116,8 +115,8 @@ public:
                                 const std::string& key,
                                 const std::string& value);
 
-  // Clear the Config object and reset all values to defaults.
-  void clear_and_reset();
+  // Called from unit tests.
+  static void check_key_tables_consistency();
 
 private:
   std::string m_primary_config_path;
@@ -155,8 +154,10 @@ private:
   bool m_run_second_cpp = true;
   uint32_t m_sloppiness = 0;
   bool m_stats = true;
-  std::string m_temporary_dir = "";
+  std::string m_temporary_dir = fmt::format(m_cache_dir + "/tmp");
   uint32_t m_umask = std::numeric_limits<uint32_t>::max(); // Don't set umask
+
+  bool m_temporary_dir_configured_explicitly = false;
 
   std::unordered_map<std::string /*key*/, std::string /*origin*/> m_origins;
 
@@ -165,10 +166,6 @@ private:
                 const nonstd::optional<std::string>& env_var_key,
                 bool negate,
                 const std::string& origin);
-
-  // These exist, but are private to be used in clear_and_reset()
-  Config(const Config&) = default;
-  Config& operator=(const Config&) = default;
 };
 
 inline const std::string&
@@ -385,6 +382,9 @@ inline void
 Config::set_cache_dir(const std::string& value)
 {
   m_cache_dir = value;
+  if (!m_temporary_dir_configured_explicitly) {
+    m_temporary_dir = m_cache_dir + "/tmp";
+  }
 }
 
 inline void

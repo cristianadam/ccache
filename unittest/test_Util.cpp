@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Joel Rosdahl and other contributors
+// Copyright (C) 2019-2020 Joel Rosdahl and other contributors
 //
 // See doc/AUTHORS.adoc for a complete list of contributors.
 //
@@ -18,11 +18,13 @@
 
 #include "../src/Config.hpp"
 #include "../src/Util.hpp"
+#include "TestUtil.hpp"
 
 #include "third_party/catch.hpp"
 
 using Catch::EndsWith;
 using Catch::Equals;
+using TestUtil::TestContext;
 
 TEST_CASE("Util::base_name")
 {
@@ -32,63 +34,6 @@ TEST_CASE("Util::base_name")
   CHECK(Util::base_name("/") == "");
   CHECK(Util::base_name("/foo") == "foo");
   CHECK(Util::base_name("/foo/bar/f.txt") == "f.txt");
-}
-
-TEST_CASE("Util::get_extension")
-{
-  CHECK(Util::get_extension("") == "");
-  CHECK(Util::get_extension(".") == ".");
-  CHECK(Util::get_extension("...") == ".");
-  CHECK(Util::get_extension("foo") == "");
-  CHECK(Util::get_extension("/") == "");
-  CHECK(Util::get_extension("/foo") == "");
-  CHECK(Util::get_extension("/foo/bar/f") == "");
-  CHECK(Util::get_extension("f.txt") == ".txt");
-  CHECK(Util::get_extension("f.abc.txt") == ".txt");
-  CHECK(Util::get_extension("/foo/bar/f.txt") == ".txt");
-  CHECK(Util::get_extension("/foo/bar/f.abc.txt") == ".txt");
-}
-
-TEST_CASE("Util::remove_extension")
-{
-  CHECK(Util::remove_extension("") == "");
-  CHECK(Util::remove_extension(".") == "");
-  CHECK(Util::remove_extension("...") == "..");
-  CHECK(Util::remove_extension("foo") == "foo");
-  CHECK(Util::remove_extension("/") == "/");
-  CHECK(Util::remove_extension("/foo") == "/foo");
-  CHECK(Util::remove_extension("/foo/bar/f") == "/foo/bar/f");
-  CHECK(Util::remove_extension("f.txt") == "f");
-  CHECK(Util::remove_extension("f.abc.txt") == "f.abc");
-  CHECK(Util::remove_extension("/foo/bar/f.txt") == "/foo/bar/f");
-  CHECK(Util::remove_extension("/foo/bar/f.abc.txt") == "/foo/bar/f.abc");
-}
-
-TEST_CASE("Util::change_extension")
-{
-  CHECK(Util::change_extension("", "") == "");
-  CHECK(Util::change_extension("x", "") == "x");
-  CHECK(Util::change_extension("", "x") == "x");
-  CHECK(Util::change_extension("", ".") == ".");
-  CHECK(Util::change_extension(".", "") == "");
-  CHECK(Util::change_extension("...", "x") == "..x");
-  CHECK(Util::change_extension("abc", "def") == "abcdef");
-  CHECK(Util::change_extension("dot.", ".dot") == "dot.dot");
-  CHECK(Util::change_extension("foo.ext", "e2") == "fooe2");
-  CHECK(Util::change_extension("bar.txt", ".o") == "bar.o");
-  CHECK(Util::change_extension("foo.bar.txt", ".o") == "foo.bar.o");
-}
-
-TEST_CASE("Util:get_truncated_base_name")
-{
-  CHECK(Util::get_truncated_base_name("", 5) == "");
-  CHECK(Util::get_truncated_base_name("a", 5) == "a");
-  CHECK(Util::get_truncated_base_name("abcdefg", 5) == "abcde");
-  CHECK(Util::get_truncated_base_name("abc.foo", 5) == "abc");
-  CHECK(Util::get_truncated_base_name("/path/to/abc.foo", 5) == "abc");
-  CHECK(Util::get_truncated_base_name("/path/to/abcdefg.foo", 5) == "abcde");
-  CHECK(Util::get_truncated_base_name("/path/to/.hidden", 5) == "");
-  CHECK(Util::get_truncated_base_name("/path/to/", 5) == "");
 }
 
 TEST_CASE("Util::big_endian_to_int")
@@ -128,8 +73,43 @@ TEST_CASE("Util::big_endian_to_int")
   CHECK(int64 == 0x709e9abcd6544bca);
 }
 
+TEST_CASE("Util::change_extension")
+{
+  CHECK(Util::change_extension("", "") == "");
+  CHECK(Util::change_extension("x", "") == "x");
+  CHECK(Util::change_extension("", "x") == "x");
+  CHECK(Util::change_extension("", ".") == ".");
+  CHECK(Util::change_extension(".", "") == "");
+  CHECK(Util::change_extension("...", "x") == "..x");
+  CHECK(Util::change_extension("abc", "def") == "abcdef");
+  CHECK(Util::change_extension("dot.", ".dot") == "dot.dot");
+  CHECK(Util::change_extension("foo.ext", "e2") == "fooe2");
+  CHECK(Util::change_extension("bar.txt", ".o") == "bar.o");
+  CHECK(Util::change_extension("foo.bar.txt", ".o") == "foo.bar.o");
+}
+
+TEST_CASE("Util::common_dir_prefix_length")
+{
+  CHECK(Util::common_dir_prefix_length("", "") == 0);
+  CHECK(Util::common_dir_prefix_length("/", "") == 0);
+  CHECK(Util::common_dir_prefix_length("", "/") == 0);
+  CHECK(Util::common_dir_prefix_length("/", "/") == 0);
+  CHECK(Util::common_dir_prefix_length("/", "/b") == 0);
+  CHECK(Util::common_dir_prefix_length("/a", "/") == 0);
+  CHECK(Util::common_dir_prefix_length("/a", "/b") == 0);
+  CHECK(Util::common_dir_prefix_length("/a", "/a") == 2);
+  CHECK(Util::common_dir_prefix_length("/a", "/a/b") == 2);
+  CHECK(Util::common_dir_prefix_length("/a/b", "/a") == 2);
+  CHECK(Util::common_dir_prefix_length("/a/b", "/a/c") == 2);
+  CHECK(Util::common_dir_prefix_length("/a/b", "/a/b") == 4);
+  CHECK(Util::common_dir_prefix_length("/a/bc", "/a/b") == 2);
+  CHECK(Util::common_dir_prefix_length("/a/b", "/a/bc") == 2);
+}
+
 TEST_CASE("Util::create_dir")
 {
+  TestContext test_context;
+
   CHECK(Util::create_dir("/"));
 
   CHECK(Util::create_dir("create/dir"));
@@ -198,8 +178,25 @@ TEST_CASE("Util::for_each_level_1_subdir")
   CHECK(actual == expected);
 }
 
+TEST_CASE("Util::get_extension")
+{
+  CHECK(Util::get_extension("") == "");
+  CHECK(Util::get_extension(".") == ".");
+  CHECK(Util::get_extension("...") == ".");
+  CHECK(Util::get_extension("foo") == "");
+  CHECK(Util::get_extension("/") == "");
+  CHECK(Util::get_extension("/foo") == "");
+  CHECK(Util::get_extension("/foo/bar/f") == "");
+  CHECK(Util::get_extension("f.txt") == ".txt");
+  CHECK(Util::get_extension("f.abc.txt") == ".txt");
+  CHECK(Util::get_extension("/foo/bar/f.txt") == ".txt");
+  CHECK(Util::get_extension("/foo/bar/f.abc.txt") == ".txt");
+}
+
 TEST_CASE("Util::get_level_1_files")
 {
+  TestContext test_context;
+
   Util::create_dir("e/m/p/t/y");
 
   Util::create_dir("0/1");
@@ -249,12 +246,53 @@ TEST_CASE("Util::get_level_1_files")
   }
 }
 
+TEST_CASE("Util::get_relative_path")
+{
+#ifdef _WIN32
+  CHECK(Util::get_relative_path("C:/a", "C:/a") == ".");
+  CHECK(Util::get_relative_path("C:/a", "Z:/a") == "Z:/a");
+  CHECK(Util::get_relative_path("C:/a/b", "C:/a") == "..");
+  CHECK(Util::get_relative_path("C:/a", "C:/a/b") == "b");
+  CHECK(Util::get_relative_path("C:/a", "C:/a/b/c") == "b/c");
+  CHECK(Util::get_relative_path("C:/a/b", "C:/a/c") == "../c");
+  CHECK(Util::get_relative_path("C:/a/b", "C:/a/c/d") == "../c/d");
+  CHECK(Util::get_relative_path("C:/a/b/c", "C:/a/c/d") == "../../c/d");
+  CHECK(Util::get_relative_path("C:/a/b", "C:/") == "../..");
+  CHECK(Util::get_relative_path("C:/a/b", "C:/c") == "../../c");
+  CHECK(Util::get_relative_path("C:/", "C:/a/b") == "a/b");
+  CHECK(Util::get_relative_path("C:/a", "D:/a/b") == "D:/a/b");
+#else
+  CHECK(Util::get_relative_path("/a", "/a") == ".");
+  CHECK(Util::get_relative_path("/a/b", "/a") == "..");
+  CHECK(Util::get_relative_path("/a", "/a/b") == "b");
+  CHECK(Util::get_relative_path("/a", "/a/b/c") == "b/c");
+  CHECK(Util::get_relative_path("/a/b", "/a/c") == "../c");
+  CHECK(Util::get_relative_path("/a/b", "/a/c/d") == "../c/d");
+  CHECK(Util::get_relative_path("/a/b/c", "/a/c/d") == "../../c/d");
+  CHECK(Util::get_relative_path("/a/b", "/") == "../..");
+  CHECK(Util::get_relative_path("/a/b", "/c") == "../../c");
+  CHECK(Util::get_relative_path("/", "/a/b") == "a/b");
+#endif
+}
+
 TEST_CASE("Util::get_path_in_cache")
 {
   CHECK(Util::get_path_in_cache("/zz/ccache", 1, "ABCDEF", ".suffix")
         == "/zz/ccache/A/BCDEF.suffix");
   CHECK(Util::get_path_in_cache("/zz/ccache", 4, "ABCDEF", ".suffix")
         == "/zz/ccache/A/B/C/D/EF.suffix");
+}
+
+TEST_CASE("Util:get_truncated_base_name")
+{
+  CHECK(Util::get_truncated_base_name("", 5) == "");
+  CHECK(Util::get_truncated_base_name("a", 5) == "a");
+  CHECK(Util::get_truncated_base_name("abcdefg", 5) == "abcde");
+  CHECK(Util::get_truncated_base_name("abc.foo", 5) == "abc");
+  CHECK(Util::get_truncated_base_name("/path/to/abc.foo", 5) == "abc");
+  CHECK(Util::get_truncated_base_name("/path/to/abcdefg.foo", 5) == "abcde");
+  CHECK(Util::get_truncated_base_name("/path/to/.hidden", 5) == "");
+  CHECK(Util::get_truncated_base_name("/path/to/", 5) == "");
 }
 
 TEST_CASE("Util::int_to_big_endian")
@@ -316,6 +354,92 @@ TEST_CASE("Util::int_to_big_endian")
   CHECK(bytes[7] == 0xca);
 }
 
+TEST_CASE("Util::is_absolute_path")
+{
+#ifdef _WIN32
+  CHECK(Util::is_absolute_path("C:/"));
+  CHECK(Util::is_absolute_path("C:\\foo/fie"));
+  CHECK(Util::is_absolute_path("/C:\\foo/fie")); // MSYS/Cygwin path
+  CHECK(!Util::is_absolute_path(""));
+  CHECK(!Util::is_absolute_path("foo\\fie/fum"));
+  CHECK(!Util::is_absolute_path("C:foo/fie"));
+#endif
+  CHECK(Util::is_absolute_path("/"));
+  CHECK(Util::is_absolute_path("/foo/fie"));
+  CHECK(!Util::is_absolute_path(""));
+  CHECK(!Util::is_absolute_path("foo/fie"));
+}
+
+TEST_CASE("Util::is_dir_separator")
+{
+  CHECK(!Util::is_dir_separator('x'));
+  CHECK(Util::is_dir_separator('/'));
+#ifdef _WIN32
+  CHECK(Util::is_dir_separator('\\'));
+#else
+  CHECK(!Util::is_dir_separator('\\'));
+#endif
+}
+
+TEST_CASE("Util::matches_dir_prefix_or_file")
+{
+  CHECK(!Util::matches_dir_prefix_or_file("", ""));
+  CHECK(!Util::matches_dir_prefix_or_file("/", ""));
+  CHECK(!Util::matches_dir_prefix_or_file("", "/"));
+
+  CHECK(Util::matches_dir_prefix_or_file("aa", "aa"));
+  CHECK(!Util::matches_dir_prefix_or_file("aaa", "aa"));
+  CHECK(!Util::matches_dir_prefix_or_file("aa", "aaa"));
+  CHECK(!Util::matches_dir_prefix_or_file("aa/", "aa"));
+
+  CHECK(Util::matches_dir_prefix_or_file("/aa/bb", "/aa/bb"));
+  CHECK(!Util::matches_dir_prefix_or_file("/aa/b", "/aa/bb"));
+  CHECK(!Util::matches_dir_prefix_or_file("/aa/bbb", "/aa/bb"));
+
+  CHECK(Util::matches_dir_prefix_or_file("/aa", "/aa/bb"));
+  CHECK(Util::matches_dir_prefix_or_file("/aa/", "/aa/bb"));
+  CHECK(!Util::matches_dir_prefix_or_file("/aa/bb", "/aa"));
+  CHECK(!Util::matches_dir_prefix_or_file("/aa/bb", "/aa/"));
+
+#ifdef _WIN32
+  CHECK(Util::matches_dir_prefix_or_file("\\aa", "\\aa\\bb"));
+  CHECK(Util::matches_dir_prefix_or_file("\\aa\\", "\\aa\\bb"));
+#else
+  CHECK(!Util::matches_dir_prefix_or_file("\\aa", "\\aa\\bb"));
+  CHECK(!Util::matches_dir_prefix_or_file("\\aa\\", "\\aa\\bb"));
+#endif
+}
+
+TEST_CASE("Util::normalize_absolute_path")
+{
+  CHECK(Util::normalize_absolute_path("") == "");
+  CHECK(Util::normalize_absolute_path(".") == ".");
+  CHECK(Util::normalize_absolute_path("..") == "..");
+  CHECK(Util::normalize_absolute_path("...") == "...");
+  CHECK(Util::normalize_absolute_path("x/./") == "x/./");
+
+#ifdef _WIN32
+  CHECK(Util::normalize_absolute_path("c:/") == "c:/");
+  CHECK(Util::normalize_absolute_path("c:\\") == "c:/");
+  CHECK(Util::normalize_absolute_path("c:/.") == "c:/");
+  CHECK(Util::normalize_absolute_path("c:\\..") == "c:/");
+  CHECK(Util::normalize_absolute_path("c:\\x/..") == "c:/");
+  CHECK(Util::normalize_absolute_path("c:\\x/./y\\..\\\\z") == "c:/x/z");
+#else
+  CHECK(Util::normalize_absolute_path("/") == "/");
+  CHECK(Util::normalize_absolute_path("/.") == "/");
+  CHECK(Util::normalize_absolute_path("/..") == "/");
+  CHECK(Util::normalize_absolute_path("/./") == "/");
+  CHECK(Util::normalize_absolute_path("//") == "/");
+  CHECK(Util::normalize_absolute_path("/../x") == "/x");
+  CHECK(Util::normalize_absolute_path("/x/./y/z") == "/x/y/z");
+  CHECK(Util::normalize_absolute_path("/x/../y/z/") == "/y/z");
+  CHECK(Util::normalize_absolute_path("/x/.../y/z") == "/x/.../y/z");
+  CHECK(Util::normalize_absolute_path("/x/yyy/../zz") == "/x/zz");
+  CHECK(Util::normalize_absolute_path("//x/yyy///.././zz") == "/x/zz");
+#endif
+}
+
 TEST_CASE("Util::parse_int")
 {
   CHECK(Util::parse_int("0") == 0);
@@ -352,9 +476,122 @@ TEST_CASE("Util::parse_int")
 
 TEST_CASE("Util::read_file and Util::write_file")
 {
+  TestContext test_context;
+
   Util::write_file("test", "foo\nbar\n");
   std::string data = Util::read_file("test");
   CHECK(data == "foo\nbar\n");
+
+  Util::write_file("test", "car");
+  data = Util::read_file("test");
+  CHECK(data == "car");
+
+  Util::write_file("test", "pet", std::ios::app);
+  data = Util::read_file("test");
+  CHECK(data == "carpet");
+
+  CHECK_THROWS_WITH(Util::read_file("does/not/exist"),
+                    Equals("No such file or directory"));
+
+  CHECK_THROWS_WITH(Util::write_file("", "does/not/exist"),
+                    Equals("No such file or directory"));
+}
+
+TEST_CASE("Util::remove_extension")
+{
+  CHECK(Util::remove_extension("") == "");
+  CHECK(Util::remove_extension(".") == "");
+  CHECK(Util::remove_extension("...") == "..");
+  CHECK(Util::remove_extension("foo") == "foo");
+  CHECK(Util::remove_extension("/") == "/");
+  CHECK(Util::remove_extension("/foo") == "/foo");
+  CHECK(Util::remove_extension("/foo/bar/f") == "/foo/bar/f");
+  CHECK(Util::remove_extension("f.txt") == "f");
+  CHECK(Util::remove_extension("f.abc.txt") == "f.abc");
+  CHECK(Util::remove_extension("/foo/bar/f.txt") == "/foo/bar/f");
+  CHECK(Util::remove_extension("/foo/bar/f.abc.txt") == "/foo/bar/f.abc");
+}
+
+TEST_CASE("Util::split_into_views")
+{
+  {
+    CHECK(Util::split_into_views("", "/").empty());
+  }
+  {
+    CHECK(Util::split_into_views("///", "/").empty());
+  }
+  {
+    auto s = Util::split_into_views("a/b", "/");
+    REQUIRE(s.size() == 2);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+  }
+  {
+    auto s = Util::split_into_views("a/b", "x");
+    REQUIRE(s.size() == 1);
+    CHECK(s.at(0) == "a/b");
+  }
+  {
+    auto s = Util::split_into_views("a/b:c", "/:");
+    REQUIRE(s.size() == 3);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+    CHECK(s.at(2) == "c");
+  }
+  {
+    auto s = Util::split_into_views(":a//b..:.c/:/.", "/:.");
+    REQUIRE(s.size() == 3);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+    CHECK(s.at(2) == "c");
+  }
+  {
+    auto s = Util::split_into_views(".0.1.2.3.4.5.6.7.8.9.", "/:.+_abcdef");
+    REQUIRE(s.size() == 10);
+    CHECK(s.at(0) == "0");
+    CHECK(s.at(9) == "9");
+  }
+}
+
+TEST_CASE("Util::split_into_strings")
+{
+  {
+    CHECK(Util::split_into_strings("", "/").empty());
+  }
+  {
+    CHECK(Util::split_into_strings("///", "/").empty());
+  }
+  {
+    auto s = Util::split_into_strings("a/b", "/");
+    REQUIRE(s.size() == 2);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+  }
+  {
+    auto s = Util::split_into_strings("a/b", "x");
+    REQUIRE(s.size() == 1);
+    CHECK(s.at(0) == "a/b");
+  }
+  {
+    auto s = Util::split_into_strings("a/b:c", "/:");
+    REQUIRE(s.size() == 3);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+    CHECK(s.at(2) == "c");
+  }
+  {
+    auto s = Util::split_into_strings(":a//b..:.c/:/.", "/:.");
+    REQUIRE(s.size() == 3);
+    CHECK(s.at(0) == "a");
+    CHECK(s.at(1) == "b");
+    CHECK(s.at(2) == "c");
+  }
+  {
+    auto s = Util::split_into_strings(".0.1.2.3.4.5.6.7.8.9.", "/:.+_abcdef");
+    REQUIRE(s.size() == 10);
+    CHECK(s.at(0) == "0");
+    CHECK(s.at(9) == "9");
+  }
 }
 
 TEST_CASE("Util::starts_with")
@@ -392,4 +629,98 @@ TEST_CASE("Util::to_lowercase")
   CHECK(Util::to_lowercase("x") == "x");
   CHECK(Util::to_lowercase("X") == "x");
   CHECK(Util::to_lowercase(" x_X@") == " x_x@");
+}
+
+TEST_CASE("Util::traverse")
+{
+  TestContext test_context;
+
+  REQUIRE(Util::create_dir("dir-with-subdir-and-file/subdir"));
+  Util::write_file("dir-with-subdir-and-file/subdir/f", "");
+  REQUIRE(Util::create_dir("dir-with-files"));
+  Util::write_file("dir-with-files/f1", "");
+  Util::write_file("dir-with-files/f2", "");
+  REQUIRE(Util::create_dir("empty-dir"));
+
+  std::vector<std::string> visited;
+  auto visitor = [&visited](const std::string& path, bool is_dir) {
+    visited.push_back(fmt::format("[{}] {}", is_dir ? 'd' : 'f', path));
+  };
+
+  SECTION("traverse nonexistent path")
+  {
+    CHECK_THROWS_WITH(
+      Util::traverse("nonexistent", visitor),
+      "failed to open directory nonexistent: No such file or directory");
+  }
+
+  SECTION("traverse file")
+  {
+    CHECK_NOTHROW(Util::traverse("dir-with-subdir-and-file/subdir/f", visitor));
+    REQUIRE(visited.size() == 1);
+    CHECK(visited[0] == "[f] dir-with-subdir-and-file/subdir/f");
+  }
+
+  SECTION("traverse empty directory")
+  {
+    CHECK_NOTHROW(Util::traverse("empty-dir", visitor));
+    REQUIRE(visited.size() == 1);
+    CHECK(visited[0] == "[d] empty-dir");
+  }
+
+  SECTION("traverse directory with files")
+  {
+    CHECK_NOTHROW(Util::traverse("dir-with-files", visitor));
+    REQUIRE(visited.size() == 3);
+    std::string f1 = "[f] dir-with-files/f1";
+    std::string f2 = "[f] dir-with-files/f2";
+    CHECK(((visited[0] == f1 && visited[1] == f2)
+           || (visited[0] == f2 && visited[1] == f1)));
+    CHECK(visited[2] == "[d] dir-with-files");
+  }
+
+  SECTION("traverse directory hierarchy")
+  {
+    CHECK_NOTHROW(Util::traverse("dir-with-subdir-and-file", visitor));
+    REQUIRE(visited.size() == 3);
+    CHECK(visited[0] == "[f] dir-with-subdir-and-file/subdir/f");
+    CHECK(visited[1] == "[d] dir-with-subdir-and-file/subdir");
+    CHECK(visited[2] == "[d] dir-with-subdir-and-file");
+  }
+}
+
+TEST_CASE("Util::wipe_path")
+{
+  TestContext test_context;
+
+  SECTION("Wipe non-existing path")
+  {
+    CHECK_NOTHROW(Util::wipe_path("a"));
+  }
+
+  SECTION("Wipe file")
+  {
+    Util::write_file("a", "");
+    CHECK_NOTHROW(Util::wipe_path("a"));
+    CHECK(!Stat::stat("a"));
+  }
+
+  SECTION("Wipe directory")
+  {
+    REQUIRE(Util::create_dir("a/b"));
+    Util::write_file("a/1", "");
+    Util::write_file("a/b/1", "");
+    CHECK_NOTHROW(Util::wipe_path("a"));
+    CHECK(!Stat::stat("a"));
+  }
+
+  SECTION("Wipe bad path")
+  {
+#ifdef _WIN32
+    const char error[] = "failed to rmdir .: Permission denied";
+#else
+    const char error[] = "failed to rmdir .: Invalid argument";
+#endif
+    CHECK_THROWS_WITH(Util::wipe_path("."), error);
+  }
 }

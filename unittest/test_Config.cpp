@@ -17,9 +17,10 @@
 // Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 #include "../src/Config.hpp"
-#include "../src/Error.hpp"
 #include "../src/Util.hpp"
 #include "../src/ccache.hpp"
+#include "../src/exceptions.hpp"
+#include "TestUtil.hpp"
 
 #include "third_party/catch.hpp"
 #include "third_party/fmt/core.h"
@@ -29,12 +30,17 @@
 #include <vector>
 
 using Catch::Equals;
+using TestUtil::TestContext;
 
 TEST_CASE("Config: default values")
 {
   Config config;
+
+  std::string expected_cache_dir =
+    fmt::format("{}/.ccache", get_home_directory());
+
   CHECK(config.base_dir().empty());
-  CHECK(config.cache_dir() == std::string(get_home_directory()) + "/.ccache");
+  CHECK(config.cache_dir() == expected_cache_dir);
   CHECK(config.cache_dir_levels() == 2);
   CHECK(config.compiler().empty());
   CHECK(config.compiler_check() == "mtime");
@@ -65,12 +71,14 @@ TEST_CASE("Config: default values")
   CHECK(config.run_second_cpp());
   CHECK(config.sloppiness() == 0);
   CHECK(config.stats());
-  CHECK(config.temporary_dir().empty());
+  CHECK(config.temporary_dir() == expected_cache_dir + "/tmp");
   CHECK(config.umask() == std::numeric_limits<uint32_t>::max());
 }
 
 TEST_CASE("Config::update_from_file")
 {
+  TestContext test_context;
+
   const char user[] = "rabbit";
   x_setenv("USER", user);
 
@@ -165,8 +173,9 @@ TEST_CASE("Config::update_from_file")
 
 TEST_CASE("Config::update_from_file, error handling")
 {
+  TestContext test_context;
+
   Config config;
-  unlink("ccache.conf"); // Make sure it doesn't exist.
 
   SECTION("missing equal sign")
   {
@@ -296,6 +305,8 @@ TEST_CASE("Config::update_from_environment")
 
 TEST_CASE("Config::set_value_in_file")
 {
+  TestContext test_context;
+
   SECTION("set new value")
   {
     Util::write_file("ccache.conf", "path = vanilla\n");
@@ -358,6 +369,8 @@ TEST_CASE("Config::get_string_value")
 
 TEST_CASE("Config::visit_items")
 {
+  TestContext test_context;
+
   Util::write_file(
     "test.conf",
 #ifndef _WIN32
@@ -461,5 +474,7 @@ TEST_CASE("Config::visit_items")
   }
 }
 
-// TODO Test that values in k_env_variable_table map to keys in
-//   k_config_item_table.;
+TEST_CASE("Check key tables consistency")
+{
+  CHECK_NOTHROW(Config::check_key_tables_consistency());
+}

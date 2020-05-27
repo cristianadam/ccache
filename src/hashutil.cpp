@@ -18,10 +18,13 @@
 
 #include "hashutil.hpp"
 
+#include "Args.hpp"
+#include "Config.hpp"
+#include "Context.hpp"
 #include "Stat.hpp"
-#include "args.hpp"
 #include "ccache.hpp"
 #include "execute.hpp"
+#include "logging.hpp"
 #include "macroskip.hpp"
 #include "stats.hpp"
 
@@ -35,7 +38,7 @@
 // as of 3.9 (see https://bugs.llvm.org/show_bug.cgi?id=25510). But if libgcc
 // is used we have the same problem as mentioned above. Unfortunately there
 // doesn't seem to be a way to detect which one is used, or the version of
-// libgcc when used by clang, so assume that it works with Clang >= 3.9.
+// libgcc when used by Clang, so assume that it works with Clang >= 3.9.
 #if !(__GNUC__ >= 8 || (__GNUC__ == 7 && __GNUC_MINOR__ >= 4)                  \
       || (__GNUC__ == 6 && __GNUC_MINOR__ >= 5) || __clang_major__ > 3         \
       || (__clang_major__ == 3 && __clang_minor__ >= 9))
@@ -207,7 +210,7 @@ hash_source_code_string(const Config& config,
 
     // Make sure that the hash sum changes if the (potential) expansion of
     // __DATE__ changes.
-    time_t t = time(NULL);
+    time_t t = time(nullptr);
     struct tm now;
     hash_delimiter(hash, "date");
     if (!localtime_r(&t, &now)) {
@@ -261,7 +264,10 @@ hash_source_code_string(const Config& config,
 // Hash a file ignoring comments. Returns a bitmask of HASH_SOURCE_CODE_*
 // results.
 int
-hash_source_code_file(const Config& config, struct hash* hash, const char* path)
+hash_source_code_file(const Config& config,
+                      struct hash* hash,
+                      const char* path,
+                      size_t size_hint)
 {
   if (is_precompiled_header(path)) {
     if (hash_file(hash, path)) {
@@ -272,7 +278,7 @@ hash_source_code_file(const Config& config, struct hash* hash, const char* path)
   } else {
     char* data;
     size_t size;
-    if (!read_file(path, 0, &data, &size)) {
+    if (!read_file(path, size_hint, &data, &size)) {
       return HASH_SOURCE_CODE_ERROR;
     }
     int result = hash_source_code_string(config, hash, data, size, path);
@@ -307,13 +313,16 @@ hash_command_output(struct hash* hash,
   }
 #endif
 
-  struct args* args = args_init_from_string(command);
-  for (int i = 0; i < args->argc; i++) {
-    if (str_eq(args->argv[i], "%compiler%")) {
-      args_set(args, i, compiler);
+  Args args = Args::from_string(command);
+
+  for (size_t i = 0; i < args.size(); i++) {
+    if (args[i] == "%compiler%") {
+      args[i] = compiler;
     }
   }
-  cc_log_argv("Executing compiler check command ", args->argv);
+
+  auto argv = args.to_argv();
+  cc_log_argv("Executing compiler check command ", argv.data());
 
 #ifdef _WIN32
   PROCESS_INFORMATION pi;
@@ -321,12 +330,13 @@ hash_command_output(struct hash* hash,
   STARTUPINFO si;
   memset(&si, 0x00, sizeof(si));
 
-  char* path = find_executable(args->argv[0], NULL);
-  if (!path) {
-    path = args->argv[0];
+  std::string path =
+    find_executable_in_path(args[0].c_str(), nullptr, getenv("PATH"));
+  if (path.empty()) {
+    path = args[0];
   }
-  char* sh = win32getshell(path);
-  if (sh) {
+  std::string sh = win32getshell(path.c_str());
+  if (!sh.empty()) {
     path = sh;
   }
 
@@ -344,27 +354,25 @@ hash_command_output(struct hash* hash,
   char* win32args;
   if (!cmd) {
     int length;
-    win32args = win32argvtos(sh, args->argv, &length);
+    const char* prefix = sh.empty() ? nullptr : sh.c_str();
+    win32args = win32argvtos(prefix, argv.data(), &length);
   } else {
     win32args = (char*)command; // quoted
   }
-  BOOL ret =
-    CreateProcess(path, win32args, NULL, NULL, 1, 0, NULL, NULL, &si, &pi);
+  BOOL ret = CreateProcess(
+    path.c_str(), win32args, NULL, NULL, 1, 0, NULL, NULL, &si, &pi);
   CloseHandle(pipe_out[1]);
-  args_free(args);
   free(win32args);
   if (!cmd) {
     free((char*)command); // Original argument was replaced above.
   }
   if (ret == 0) {
-    stats_update(STATS_COMPCHECK);
     return false;
   }
   int fd = _open_osfhandle((intptr_t)pipe_out[0], O_BINARY);
   bool ok = hash_fd(hash, fd);
   if (!ok) {
     cc_log("Error hashing compiler check command output: %s", strerror(errno));
-    stats_update(STATS_COMPCHECK);
   }
   WaitForSingleObject(pi.hProcess, INFINITE);
   DWORD exitcode;
@@ -374,7 +382,6 @@ hash_command_output(struct hash* hash,
   CloseHandle(pi.hThread);
   if (exitcode != 0) {
     cc_log("Compiler check command returned %d", (int)exitcode);
-    stats_update(STATS_COMPCHECK);
     return false;
   }
   return ok;
@@ -395,17 +402,15 @@ hash_command_output(struct hash* hash,
     close(0);
     dup2(pipefd[1], 1);
     dup2(pipefd[1], 2);
-    _exit(execvp(args->argv[0], args->argv));
+    _exit(execvp(argv[0], const_cast<char* const*>(argv.data())));
     // Never reached.
   } else {
     // Parent.
-    args_free(args);
     close(pipefd[1]);
     bool ok = hash_fd(hash, pipefd[0]);
     if (!ok) {
       cc_log("Error hashing compiler check command output: %s",
              strerror(errno));
-      stats_update(STATS_COMPCHECK);
     }
     close(pipefd[0]);
 
@@ -416,7 +421,6 @@ hash_command_output(struct hash* hash,
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
       cc_log("Compiler check command returned %d", WEXITSTATUS(status));
-      stats_update(STATS_COMPCHECK);
       return false;
     }
     return ok;
@@ -429,17 +433,11 @@ hash_multicommand_output(struct hash* hash,
                          const char* commands,
                          const char* compiler)
 {
-  char* command_string = x_strdup(commands);
-  char* p = command_string;
-  char* command;
-  char* saveptr = NULL;
   bool ok = true;
-  while ((command = strtok_r(p, ";", &saveptr))) {
-    if (!hash_command_output(hash, command, compiler)) {
+  for (const std::string& cmd : Util::split_into_strings(commands, ";")) {
+    if (!hash_command_output(hash, cmd.c_str(), compiler)) {
       ok = false;
     }
-    p = NULL;
   }
-  free(command_string);
   return ok;
 }

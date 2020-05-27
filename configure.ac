@@ -93,6 +93,7 @@ if test "$dev_mode" = yes -o "$enable_more_warnings" = yes; then
         AX_CHECK_COMPILE_FLAG([-Wno-global-constructors], [extra_warnings="$extra_warnings -Wno-global-constructors"],, [-Werror])
         AX_CHECK_COMPILE_FLAG([-Wno-implicit-fallthrough], [extra_warnings="$extra_warnings -Wno-implicit-fallthrough"],, [-Werror])
         AX_CHECK_COMPILE_FLAG([-Wno-padded], [extra_warnings="$extra_warnings -Wno-padded"],, [-Werror])
+        AX_CHECK_COMPILE_FLAG([-Wno-return-std-move-in-c++11], [extra_warnings="$extra_warnings -Wno-return-std-move-in-c++11"],, [-Werror])
         AX_CHECK_COMPILE_FLAG([-Wno-shadow-field-in-constructor], [extra_warnings="$extra_warnings -Wno-shadow-field-in-constructor"],, [-Werror])
         AX_CHECK_COMPILE_FLAG([-Wno-shorten-64-to-32], [extra_warnings="$extra_warnings -Wno-shorten-64-to-32"],, [-Werror])
         AX_CHECK_COMPILE_FLAG([-Wno-sign-conversion], [extra_warnings="$extra_warnings -Wno-sign-conversion"],, [-Werror])
@@ -119,7 +120,6 @@ AC_CHECK_HEADERS(linux/fs.h)
 AC_CHECK_HEADERS(sys/clonefile.h)
 
 AC_CHECK_FUNCS(asctime_r)
-AC_CHECK_FUNCS(gethostname)
 AC_CHECK_FUNCS(getopt_long)
 AC_CHECK_FUNCS(getpwuid)
 AC_CHECK_FUNCS(gettimeofday)
@@ -128,7 +128,6 @@ AC_CHECK_FUNCS(mkstemp)
 AC_CHECK_FUNCS(realpath)
 AC_CHECK_FUNCS(setenv)
 AC_CHECK_FUNCS(strndup)
-AC_CHECK_FUNCS(strtok_r)
 AC_CHECK_FUNCS(syslog)
 AC_CHECK_FUNCS(unsetenv)
 AC_CHECK_FUNCS(utimes)
@@ -165,6 +164,9 @@ else
                 AC_MSG_ERROR(please install wget or curl)
             fi
         fi
+    fi
+    if ! test -f $zstd_archive; then
+        AC_MSG_ERROR(failed to download $zstd_url)
     fi
     (cd src/third_party && tar -xzf ../../${zstd_archive})
     rm -rf src/third_party/zstd
@@ -203,6 +205,9 @@ else
             fi
         fi
     fi
+    if ! test -f $libb2_archive; then
+        AC_MSG_ERROR(failed to download $libb2_url)
+    fi
     (cd src/third_party && tar -xzf ../../${libb2_archive})
     rm -rf src/third_party/libb2
     mv src/third_party/libb2-${libb2_version} src/third_party/libb2
@@ -235,6 +240,7 @@ fi
 
 dnl Linking on Windows needs ws2_32
 if test x${windows_os} = xyes; then
+    LDFLAGS="$LDFLAGS -static"
     LIBS="$LIBS -lws2_32"
     AC_CHECK_FUNCS(GetFinalPathNameByHandleW,[],[LIBS="$LIBS -lpsapi"])
 fi

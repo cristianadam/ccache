@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Joel Rosdahl and other contributors
+// Copyright (C) 2019-2020 Joel Rosdahl and other contributors
 //
 // See doc/AUTHORS.adoc for a complete list of contributors.
 //
@@ -20,7 +20,7 @@
 
 #include "system.hpp"
 
-#include "Error.hpp"
+#include "exceptions.hpp"
 
 #include <string>
 
@@ -37,6 +37,10 @@ public:
     // Throw Error on errors (including missing file).
     throw_error,
   };
+
+  // Create an empty stat result. operator bool() will return false,
+  // error_number() will return -1 and other accessors will return false or 0.
+  Stat();
 
   // Run stat(2).
   //
@@ -56,6 +60,10 @@ public:
   // Return true if the file could be (l)stat-ed (i.e., the file exists),
   // otherwise false.
   operator bool() const;
+
+  // Return whether this object refers to the same device and i-node as `other`
+  // does.
+  bool same_inode_as(const Stat& other) const;
 
   // Return errno from the (l)stat call (0 if successful).
   int error_number() const;
@@ -81,7 +89,14 @@ protected:
 private:
   struct stat m_stat;
   int m_errno;
+
+  bool operator==(const Stat&) const;
+  bool operator!=(const Stat&) const;
 };
+
+inline Stat::Stat() : m_stat{}, m_errno(-1)
+{
+}
 
 inline Stat
 Stat::stat(const std::string& path, OnError on_error)
@@ -105,6 +120,12 @@ Stat::lstat(const std::string& path, OnError on_error)
 inline Stat::operator bool() const
 {
   return m_errno == 0;
+}
+
+inline bool
+Stat::same_inode_as(const Stat& other) const
+{
+  return device() == other.device() && inode() == other.inode();
 }
 
 inline int

@@ -20,19 +20,22 @@
 #include "execute.hpp"
 
 #include "Config.hpp"
+#include "Context.hpp"
+#include "SignalHandler.hpp"
 #include "Stat.hpp"
 #include "Util.hpp"
 #include "ccache.hpp"
+#include "logging.hpp"
+
+#ifdef _WIN32
+#  include "win32compat.hpp"
+#endif
 
 using nonstd::string_view;
 
-static char* find_executable_in_path(const char* name,
-                                     const char* exclude_name,
-                                     const char* path);
-
 #ifdef _WIN32
 int
-execute(char** argv, int fd_out, int fd_err, pid_t* /*pid*/)
+execute(const char* const* argv, int fd_out, int fd_err, pid_t* /*pid*/)
 {
   return win32execute(argv[0], argv, 1, fd_out, fd_err);
 }
@@ -40,11 +43,11 @@ execute(char** argv, int fd_out, int fd_err, pid_t* /*pid*/)
 // Re-create a win32 command line string based on **argv.
 // http://msdn.microsoft.com/en-us/library/17w5ykft.aspx
 char*
-win32argvtos(char* prefix, char** argv, int* length)
+win32argvtos(const char* prefix, const char* const* argv, int* length)
 {
   int i = 0;
   int k = 0;
-  char* arg = prefix ? prefix : argv[i++];
+  const char* arg = prefix ? prefix : argv[i++];
   do {
     int bs = 0;
     for (int j = 0; arg[j]; j++) {
@@ -104,16 +107,16 @@ win32argvtos(char* prefix, char** argv, int* length)
   return str;
 }
 
-char*
-win32getshell(char* path)
+std::string
+win32getshell(const char* path)
 {
   char* path_env;
-  char* sh = NULL;
+  std::string sh;
   const char* ext = get_extension(path);
   if (ext && strcasecmp(ext, ".sh") == 0 && (path_env = getenv("PATH"))) {
     sh = find_executable_in_path("sh.exe", NULL, path_env);
   }
-  if (!sh && getenv("CCACHE_DETECT_SHEBANG")) {
+  if (sh.empty() && getenv("CCACHE_DETECT_SHEBANG")) {
     // Detect shebang.
     FILE* fp = fopen(path, "r");
     if (fp) {
@@ -146,8 +149,11 @@ add_exe_ext_if_no_to_fullpath(char* full_path_win_ext,
 }
 
 int
-win32execute(
-  char* path, char** argv, int doreturn, int fd_stdout, int fd_stderr)
+win32execute(const char* path,
+             const char* const* argv,
+             int doreturn,
+             int fd_stdout,
+             int fd_stderr)
 {
   PROCESS_INFORMATION pi;
   memset(&pi, 0x00, sizeof(pi));
@@ -155,9 +161,9 @@ win32execute(
   STARTUPINFO si;
   memset(&si, 0x00, sizeof(si));
 
-  char* sh = win32getshell(path);
-  if (sh) {
-    path = sh;
+  std::string sh = win32getshell(path);
+  if (!sh.empty()) {
+    path = sh.c_str();
   }
 
   si.cb = sizeof(STARTUPINFO);
@@ -183,7 +189,8 @@ win32execute(
   }
 
   int length;
-  char* args = win32argvtos(sh, argv, &length);
+  const char* prefix = sh.empty() ? nullptr : sh.c_str();
+  char* args = win32argvtos(prefix, argv, &length);
   const char* ext = strrchr(path, '.');
   char full_path_win_ext[MAX_PATH] = {0};
   add_exe_ext_if_no_to_fullpath(full_path_win_ext, MAX_PATH, ext, path);
@@ -199,7 +206,7 @@ win32execute(
     fclose(fp);
     snprintf(atfile, sizeof(atfile), "\"@%s\"", tmp_file);
     ret = CreateProcess(NULL, atfile, NULL, NULL, 1, 0, NULL, NULL, &si, &pi);
-    tmp_unlink(tmp_file);
+    Util::unlink_tmp(tmp_file);
     free(tmp_file);
   }
   if (!ret) {
@@ -212,35 +219,12 @@ win32execute(
   }
   free(args);
   if (ret == 0) {
-    LPVOID lpMsgBuf;
-    DWORD dw = GetLastError();
-    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                    | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  NULL,
-                  dw,
-                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                  (LPTSTR)&lpMsgBuf,
-                  0,
-                  NULL);
-
-    LPVOID lpDisplayBuf = (LPVOID)LocalAlloc(
-      LMEM_ZEROINIT,
-      (lstrlen((LPCTSTR)lpMsgBuf) + lstrlen((LPCTSTR)__FILE__) + 200)
-        * sizeof(TCHAR));
-    _snprintf((LPTSTR)lpDisplayBuf,
-              LocalSize(lpDisplayBuf) / sizeof(TCHAR),
-              TEXT("%s failed with error %lu: %s"),
-              __FILE__,
-              dw,
-              (const char*)lpMsgBuf);
-
-    cc_log("can't execute %s; OS returned error: %s",
+    DWORD error = GetLastError();
+    std::string error_message = win32_error_message(error);
+    cc_log("failed to execute %s: %s (%lu)",
            full_path_win_ext,
-           (char*)lpDisplayBuf);
-
-    LocalFree(lpMsgBuf);
-    LocalFree(lpDisplayBuf);
-
+           win32_error_message(error).c_str(),
+           error);
     return -1;
   }
   WaitForSingleObject(pi.hProcess, INFINITE);
@@ -260,13 +244,14 @@ win32execute(
 // Execute a compiler backend, capturing all output to the given paths the full
 // path to the compiler to run is in argv[0].
 int
-execute(char** argv, int fd_out, int fd_err, pid_t* pid)
+execute(const char* const* argv, int fd_out, int fd_err, pid_t* pid)
 {
   cc_log_argv("Executing ", argv);
 
-  block_signals();
-  *pid = fork();
-  unblock_signals();
+  {
+    SignalHandlerBlocker signal_handler_blocker;
+    *pid = fork();
+  }
 
   if (*pid == -1) {
     fatal("Failed to fork: %s", strerror(errno));
@@ -274,11 +259,11 @@ execute(char** argv, int fd_out, int fd_err, pid_t* pid)
 
   if (*pid == 0) {
     // Child.
-    dup2(fd_out, 1);
+    dup2(fd_out, STDOUT_FILENO);
     close(fd_out);
-    dup2(fd_err, 2);
+    dup2(fd_err, STDERR_FILENO);
     close(fd_err);
-    x_exit(execv(argv[0], argv));
+    x_exit(execv(argv[0], const_cast<char* const*>(argv)));
   }
 
   close(fd_out);
@@ -289,9 +274,10 @@ execute(char** argv, int fd_out, int fd_err, pid_t* pid)
     fatal("waitpid failed: %s", strerror(errno));
   }
 
-  block_signals();
-  *pid = 0;
-  unblock_signals();
+  {
+    SignalHandlerBlocker signal_handler_blocker;
+    *pid = 0;
+  }
 
   if (WEXITSTATUS(status) == 0 && WIFSIGNALED(status)) {
     return -1;
@@ -303,83 +289,77 @@ execute(char** argv, int fd_out, int fd_err, pid_t* pid)
 
 // Find an executable by name in $PATH. Exclude any that are links to
 // exclude_name.
-char*
-find_executable(const char* name, const char* exclude_name)
+std::string
+find_executable(const Context& ctx, const char* name, const char* exclude_name)
 {
-  if (is_absolute_path(name)) {
-    return x_strdup(name);
+  if (Util::is_absolute_path(name)) {
+    return name;
   }
 
-  const char* path = g_config.path().c_str();
+  const char* path = ctx.config.path().c_str();
   if (str_eq(path, "")) {
     path = getenv("PATH");
   }
   if (!path) {
     cc_log("No PATH variable");
-    return NULL;
+    return "";
   }
 
   return find_executable_in_path(name, exclude_name, path);
 }
 
-static char*
+std::string
 find_executable_in_path(const char* name,
                         const char* exclude_name,
                         const char* path)
 {
-  char* path_buf = x_strdup(path);
+  if (!path) {
+    return {};
+  }
 
   // Search the path looking for the first compiler of the right name that
   // isn't us.
-  char* saveptr = NULL;
-  for (char* tok = strtok_r(path_buf, PATH_DELIM, &saveptr); tok;
-       tok = strtok_r(NULL, PATH_DELIM, &saveptr)) {
+  for (const std::string& dir : Util::split_into_strings(path, PATH_DELIM)) {
 #ifdef _WIN32
     char namebuf[MAX_PATH];
-    int ret = SearchPath(tok, name, NULL, sizeof(namebuf), namebuf, NULL);
+    int ret =
+      SearchPath(dir.c_str(), name, NULL, sizeof(namebuf), namebuf, NULL);
     if (!ret) {
       char* exename = format("%s.exe", name);
-      ret = SearchPath(tok, exename, NULL, sizeof(namebuf), namebuf, NULL);
+      ret =
+        SearchPath(dir.c_str(), exename, NULL, sizeof(namebuf), namebuf, NULL);
       free(exename);
     }
     (void)exclude_name;
     if (ret) {
-      free(path_buf);
-      return x_strdup(namebuf);
+      return std::string(namebuf);
     }
 #else
-    char* fname = format("%s/%s", tok, name);
+    assert(exclude_name);
+    std::string fname = fmt::format("{}/{}", dir, name);
     auto st1 = Stat::lstat(fname);
     auto st2 = Stat::stat(fname);
     // Look for a normal executable file.
-    if (st1 && st2 && st2.is_regular() && access(fname, X_OK) == 0) {
+    if (st1 && st2 && st2.is_regular() && access(fname.c_str(), X_OK) == 0) {
       if (st1.is_symlink()) {
-        char* buf = x_realpath(fname);
-        if (buf) {
-          string_view p = Util::base_name(buf);
-          if (p == exclude_name) {
-            // It's a link to "ccache"!
-            free(buf);
-            continue;
-          }
-          free(buf);
+        std::string real_path = Util::real_path(fname, true);
+        if (Util::base_name(real_path) == exclude_name) {
+          // It's a link to "ccache"!
+          continue;
         }
       }
 
       // Found it!
-      free(path_buf);
       return fname;
     }
-    free(fname);
 #endif
   }
 
-  free(path_buf);
-  return NULL;
+  return "";
 }
 
 void
-print_command(FILE* fp, char** argv)
+print_command(FILE* fp, const char* const* argv)
 {
   for (int i = 0; argv[i]; i++) {
     fprintf(fp, "%s%s", (i == 0) ? "" : " ", argv[i]);

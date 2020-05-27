@@ -1,4 +1,4 @@
-// Copyright (C) 2009-2019 Joel Rosdahl and other contributors
+// Copyright (C) 2009-2020 Joel Rosdahl and other contributors
 //
 // See doc/AUTHORS.adoc for a complete list of contributors.
 //
@@ -20,10 +20,12 @@
 
 #include "system.hpp"
 
-#include "Config.hpp"
 #include "hash.hpp"
 
 #include <inttypes.h>
+
+class Config;
+class Context;
 
 unsigned hash_from_int(int i);
 
@@ -41,7 +43,8 @@ int hash_source_code_string(const Config& config,
                             const char* path);
 int hash_source_code_file(const Config& config,
                           struct hash* hash,
-                          const char* path);
+                          const char* path,
+                          size_t size_hint = 0);
 bool hash_command_output(struct hash* hash,
                          const char* command,
                          const char* compiler);

@@ -21,6 +21,7 @@
 #include "AtomicFile.hpp"
 #include "CacheEntryReader.hpp"
 #include "CacheEntryWriter.hpp"
+#include "Context.hpp"
 #include "File.hpp"
 #include "StdMakeUnique.hpp"
 #include "ThreadPool.hpp"
@@ -84,7 +85,8 @@ create_writer(FILE* stream,
 }
 
 static void
-recompress_file(const std::string& stats_file,
+recompress_file(Context& ctx,
+                const std::string& stats_file,
                 const CacheFile& cache_file,
                 int8_t level)
 {
@@ -98,6 +100,7 @@ recompress_file(const std::string& stats_file,
     return;
   }
 
+  cc_log("Recompressing %s to level %d", cache_file.path().c_str(), level);
   AtomicFile atomic_new_file(cache_file.path(), AtomicFile::Mode::binary);
   auto writer = create_writer(atomic_new_file.stream(),
                               *reader,
@@ -116,13 +119,24 @@ recompress_file(const std::string& stats_file,
   reader->finalize();
   writer->finalize();
 
+  file.close();
+
   uint64_t old_size =
     Stat::stat(cache_file.path(), Stat::OnError::log).size_on_disk();
   atomic_new_file.commit();
   uint64_t new_size =
     Stat::stat(cache_file.path(), Stat::OnError::log).size_on_disk();
 
-  stats_update_size(stats_file.c_str(), new_size - old_size, 0);
+  size_t size_delta = new_size - old_size;
+  if (ctx.stats_file() == stats_file) {
+    stats_update_size(ctx.counter_updates, size_delta, 0);
+  } else {
+    Counters counters;
+    stats_update_size(counters, size_delta, 0);
+    stats_flush_to_file(ctx.config, stats_file, counters);
+  }
+
+  cc_log("Recompression of %s done", cache_file.path().c_str());
 }
 
 void
@@ -194,7 +208,7 @@ compress_stats(const Config& config,
 }
 
 void
-compress_recompress(const Config& config,
+compress_recompress(Context& ctx,
                     int8_t level,
                     const Util::ProgressReceiver& progress_receiver)
 {
@@ -203,7 +217,7 @@ compress_recompress(const Config& config,
   ThreadPool thread_pool(threads, read_ahead);
 
   Util::for_each_level_1_subdir(
-    config.cache_dir(),
+    ctx.config.cache_dir(),
     [&](const std::string& subdir,
         const Util::ProgressReceiver& sub_progress_receiver) {
       std::vector<std::shared_ptr<CacheFile>> files;
@@ -218,9 +232,9 @@ compress_recompress(const Config& config,
         const auto& file = files[i];
 
         if (file->type() != CacheFile::Type::unknown) {
-          thread_pool.enqueue([=] {
+          thread_pool.enqueue([&ctx, stats_file, file, level] {
             try {
-              recompress_file(stats_file, *file, level);
+              recompress_file(ctx, stats_file, *file, level);
             } catch (Error&) {
               // Ignore for now.
             }

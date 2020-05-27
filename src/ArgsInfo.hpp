@@ -20,7 +20,10 @@
 
 #include "system.hpp"
 
+#include "Args.hpp"
+
 #include <string>
+#include <vector>
 
 // This class holds meta-information derived from the compiler arguments.
 struct ArgsInfo
@@ -40,7 +43,7 @@ struct ArgsInfo
   // The path to the stack usage (implicit when using -fstack-usage).
   std::string output_su;
 
-  // Diagnostic generation information (clang). Contains pathname if not empty.
+  // Diagnostic generation information (Clang). Contains pathname if not empty.
   std::string output_dia;
 
   // Split dwarf information (GCC 4.8 and up). Contains pathname if not empty.
@@ -77,39 +80,26 @@ struct ArgsInfo
   // Is the compiler being asked to output coverage data (.gcda) at runtime?
   bool profile_arcs = false;
 
-  // Name of the custom profile directory (default: object dirname).
-  std::string profile_dir;
+  // Name of the custom profile directory or file.
+  std::string profile_path;
 
   // Profile generation / usage information.
   bool profile_use = false;
   bool profile_generate = false;
 
   // Whether we are using a precompiled header (either via -include, #include or
-  // clang's -include-pch or -include-pth).
+  // Clang's -include-pch or -include-pth).
   bool using_precompiled_header = false;
 
-  // Sanitize blacklist
-  char** sanitize_blacklists = nullptr;
-  size_t sanitize_blacklists_len = 0;
+  // Files referenced by -fsanitize-blacklist options.
+  std::vector<std::string> sanitize_blacklists;
 
-  // Array for storing -arch options.
-  static constexpr int max_arch_args = 10;
-  size_t arch_args_size = 0;
-  char* arch_args[max_arch_args] = {NULL};
+  // Architectures from -arch options.
+  std::vector<std::string> arch_args;
 
   // Relocating debuginfo in the format old=new.
-  char** debug_prefix_maps = nullptr;
-  size_t debug_prefix_maps_len = 0;
+  std::vector<std::string> debug_prefix_maps;
 
   // Argument list to add to compiler invocation in depend mode.
-  struct args* depend_extra_args = nullptr;
-
-  ArgsInfo() = default;
-  ~ArgsInfo();
-
-  ArgsInfo(const ArgsInfo&) = delete;
-  ArgsInfo& operator=(const ArgsInfo&) = delete;
-
-  ArgsInfo(ArgsInfo&&) = delete;
-  ArgsInfo& operator=(ArgsInfo&&) = delete;
+  Args depend_extra_args;
 };

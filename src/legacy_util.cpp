@@ -17,10 +17,15 @@
 // this program; if not, write to the Free Software Foundation, Inc., 51
 // Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-#include "Config.hpp"
-#include "Error.hpp"
+#include "legacy_util.hpp"
+
 #include "Util.hpp"
-#include "execute.hpp"
+#include "exceptions.hpp"
+#include "logging.hpp"
+
+#ifdef _WIN32
+#  include "win32compat.hpp"
+#endif
 
 #include "third_party/fmt/core.h"
 
@@ -28,9 +33,6 @@
 
 #ifdef HAVE_PWD_H
 #  include <pwd.h>
-#endif
-#ifdef HAVE_SYSLOG_H
-#  include <syslog.h>
 #endif
 #ifdef HAVE_SYS_TIME_H
 #  include <sys/time.h>
@@ -56,244 +58,6 @@
 #  endif
 #endif
 
-#ifdef _WIN32
-#  include <psapi.h>
-#  include <sys/locking.h>
-#  include <tchar.h>
-#endif
-
-// Destination for g_config.log_file.
-static FILE* logfile;
-
-// Whether to use syslog() instead.
-static bool use_syslog;
-
-// Buffer used for logs in debug mode.
-static char* debug_log_buffer;
-
-// Allocated debug_log_buffer size.
-static size_t debug_log_buffer_capacity;
-
-// The amount of log data stored in debug_log_buffer.
-static size_t debug_log_size;
-
-#define DEBUG_LOG_BUFFER_MARGIN 1024
-
-static bool
-init_log(void)
-{
-  if (debug_log_buffer || logfile || use_syslog) {
-    return true;
-  }
-  if (g_config.debug()) {
-    debug_log_buffer_capacity = DEBUG_LOG_BUFFER_MARGIN;
-    debug_log_buffer = static_cast<char*>(x_malloc(debug_log_buffer_capacity));
-    debug_log_size = 0;
-  }
-  if (g_config.log_file().empty()) {
-    return g_config.debug();
-  }
-#ifdef HAVE_SYSLOG
-  if (g_config.log_file() == "syslog") {
-    use_syslog = true;
-    openlog("ccache", LOG_PID, LOG_USER);
-    return true;
-  }
-#endif
-  logfile = fopen(g_config.log_file().c_str(), "a");
-  if (logfile) {
-#ifndef _WIN32
-    set_cloexec_flag(fileno(logfile));
-#endif
-    return true;
-  } else {
-    return false;
-  }
-}
-
-static void
-append_to_debug_log(const char* s, size_t len)
-{
-  assert(debug_log_buffer);
-  if (debug_log_size + len + 1 > debug_log_buffer_capacity) {
-    debug_log_buffer_capacity += len + 1 + DEBUG_LOG_BUFFER_MARGIN;
-    debug_log_buffer = static_cast<char*>(
-      x_realloc(debug_log_buffer, debug_log_buffer_capacity));
-  }
-  memcpy(debug_log_buffer + debug_log_size, s, len);
-  debug_log_size += len;
-}
-
-static void
-log_prefix(bool log_updated_time)
-{
-  static char prefix[200];
-#ifdef HAVE_GETTIMEOFDAY
-  if (log_updated_time) {
-    char timestamp[100];
-    struct tm tm;
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-#  ifdef __MINGW64_VERSION_MAJOR
-    localtime_r((time_t*)&tv.tv_sec, &tm);
-#  else
-    localtime_r(&tv.tv_sec, &tm);
-#  endif
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &tm);
-    snprintf(prefix,
-             sizeof(prefix),
-             "[%s.%06d %-5d] ",
-             timestamp,
-             (int)tv.tv_usec,
-             (int)getpid());
-  }
-#else
-  snprintf(prefix, sizeof(prefix), "[%-5d] ", (int)getpid());
-#endif
-  if (logfile) {
-    fputs(prefix, logfile);
-  }
-#ifdef HAVE_SYSLOG
-  if (use_syslog) {
-    // prefix information will be added by syslog
-  }
-#endif
-  if (debug_log_buffer) {
-    append_to_debug_log(prefix, strlen(prefix));
-  }
-}
-
-static long
-path_max(const char* path)
-{
-#ifdef PATH_MAX
-  (void)path;
-  return PATH_MAX;
-#elif defined(MAXPATHLEN)
-  (void)path;
-  return MAXPATHLEN;
-#elif defined(_PC_PATH_MAX)
-  long maxlen = pathconf(path, _PC_PATH_MAX);
-  return maxlen >= 4096 ? maxlen : 4096;
-#endif
-}
-
-static void warn_log_fail(void) ATTR_NORETURN;
-
-// Warn about failure writing to the log file and then exit.
-static void
-warn_log_fail(void)
-{
-  // Note: Can't call fatal() since that would lead to recursion.
-  fprintf(stderr,
-          "ccache: error: Failed to write to %s: %s\n",
-          g_config.log_file().c_str(),
-          strerror(errno));
-  x_exit(EXIT_FAILURE);
-}
-
-static void
-vlog(const char* format, va_list ap, bool log_updated_time)
-{
-  if (!init_log()) {
-    return;
-  }
-
-  va_list aq;
-  va_copy(aq, ap);
-  log_prefix(log_updated_time);
-  if (logfile) {
-    int rc1 = vfprintf(logfile, format, ap);
-    int rc2 = fprintf(logfile, "\n");
-    if (rc1 < 0 || rc2 < 0) {
-      warn_log_fail();
-    }
-  }
-#ifdef HAVE_SYSLOG
-  if (use_syslog) {
-    vsyslog(LOG_DEBUG, format, ap);
-  }
-#endif
-  if (debug_log_buffer) {
-    char buf[8192];
-    int len = vsnprintf(buf, sizeof(buf), format, aq);
-    if (len >= 0) {
-      append_to_debug_log(buf, std::min((size_t)len, sizeof(buf) - 1));
-      append_to_debug_log("\n", 1);
-    }
-  }
-  va_end(aq);
-}
-
-// Write a message to the log file (adding a newline) and flush.
-void
-cc_log(const char* format, ...)
-{
-  va_list ap;
-  va_start(ap, format);
-  vlog(format, ap, true);
-  va_end(ap);
-  if (logfile) {
-    fflush(logfile);
-  }
-}
-
-// Write a message to the log file (adding a newline) without flushing and with
-// a reused timestamp.
-void
-cc_bulklog(const char* format, ...)
-{
-  va_list ap;
-  va_start(ap, format);
-  vlog(format, ap, false);
-  va_end(ap);
-}
-
-// Log an executed command to the CCACHE_LOGFILE location.
-void
-cc_log_argv(const char* prefix, char** argv)
-{
-  if (!init_log()) {
-    return;
-  }
-
-  log_prefix(true);
-  if (logfile) {
-    fputs(prefix, logfile);
-    print_command(logfile, argv);
-    int rc = fflush(logfile);
-    if (rc) {
-      warn_log_fail();
-    }
-  }
-#ifdef HAVE_SYSLOG
-  if (use_syslog) {
-    char* s = format_command(argv);
-    syslog(LOG_DEBUG, "%s", s);
-    free(s);
-  }
-#endif
-  if (debug_log_buffer) {
-    append_to_debug_log(prefix, strlen(prefix));
-    char* s = format_command(argv);
-    append_to_debug_log(s, strlen(s));
-    free(s);
-  }
-}
-
-// Copy the current log memory buffer to an output file.
-void
-cc_dump_debug_log_buffer(const char* path)
-{
-  FILE* file = fopen(path, "w");
-  if (file) {
-    (void)fwrite(debug_log_buffer, 1, debug_log_size, file);
-    fclose(file);
-  } else {
-    cc_log("Failed to open %s: %s", path, strerror(errno));
-  }
-}
-
 // Something went badly wrong!
 void
 fatal(const char* format, ...)
@@ -304,30 +68,42 @@ fatal(const char* format, ...)
   vsnprintf(msg, sizeof(msg), format, ap);
   va_end(ap);
 
-  cc_log("FATAL: %s", msg);
-  fprintf(stderr, "ccache: error: %s\n", msg);
+  throw FatalError(msg);
+}
 
-  x_exit(1);
+bool
+write_fd(int fd, const void* buf, size_t size)
+{
+  ssize_t written = 0;
+  do {
+    ssize_t count =
+      write(fd, static_cast<const uint8_t*>(buf) + written, size - written);
+    if (count == -1) {
+      if (errno != EAGAIN && errno != EINTR) {
+        return false;
+      }
+    } else {
+      written += count;
+    }
+  } while (static_cast<size_t>(written) < size);
+
+  return true;
 }
 
 // Copy all data from fd_in to fd_out.
 bool
-copy_fd(int fd_in, int fd_out)
+copy_fd(int fd_in, int fd_out, bool fd_in_is_file)
 {
-  int n;
+  ssize_t n;
   char buf[READ_BUFFER_SIZE];
   while ((n = read(fd_in, buf, sizeof(buf))) > 0) {
-    ssize_t written = 0;
-    do {
-      ssize_t count = write(fd_out, buf + written, n - written);
-      if (count == -1) {
-        if (errno != EAGAIN && errno != EINTR) {
-          return false;
-        }
-      } else {
-        written += count;
-      }
-    } while (written < n);
+    if (!write_fd(fd_out, buf, n)) {
+      return false;
+    }
+
+    if (fd_in_is_file && static_cast<size_t>(n) < sizeof(buf)) {
+      break;
+    }
   }
 
   return true;
@@ -352,7 +128,7 @@ mkstemp(char* name_template)
 
 #ifndef _WIN32
 static mode_t
-get_umask(void)
+get_umask()
 {
   static bool mask_retrieved = false;
   static mode_t mask;
@@ -381,7 +157,7 @@ clone_file(const char* src, const char* dest, bool via_tmp_file)
   }
 
   int dest_fd;
-  char* tmp_file = NULL;
+  char* tmp_file = nullptr;
   if (via_tmp_file) {
     tmp_file = x_strdup(dest);
     dest_fd = create_tmp_fd(&tmp_file);
@@ -406,7 +182,6 @@ clone_file(const char* src, const char* dest, bool via_tmp_file)
   close(src_fd);
 
   if (via_tmp_file) {
-    x_try_unlink(dest);
     if (x_rename(tmp_file, dest) != 0) {
       result = false;
     }
@@ -445,7 +220,7 @@ copy_file(const char* src, const char* dest, bool via_tmp_file)
   }
 
   int dest_fd;
-  char* tmp_file = NULL;
+  char* tmp_file = nullptr;
   if (via_tmp_file) {
     tmp_file = x_strdup(dest);
     dest_fd = create_tmp_fd(&tmp_file);
@@ -458,7 +233,7 @@ copy_file(const char* src, const char* dest, bool via_tmp_file)
     }
   }
 
-  if (copy_fd(src_fd, dest_fd)) {
+  if (copy_fd(src_fd, dest_fd, true)) {
     result = true;
   }
 
@@ -466,7 +241,6 @@ copy_file(const char* src, const char* dest, bool via_tmp_file)
   close(src_fd);
 
   if (via_tmp_file) {
-    x_try_unlink(dest);
     if (x_rename(tmp_file, dest) != 0) {
       result = false;
     }
@@ -482,14 +256,14 @@ move_file(const char* src, const char* dest)
 {
   bool ok = copy_file(src, dest, false);
   if (ok) {
-    x_unlink(src);
+    Util::unlink_safe(src);
   }
   return ok;
 }
 
 // Return a static string with the current hostname.
 const char*
-get_hostname(void)
+get_hostname()
 {
   static char hostname[260] = "";
 
@@ -497,65 +271,9 @@ get_hostname(void)
     return hostname;
   }
 
-  strcpy(hostname, "unknown");
-#if HAVE_GETHOSTNAME
-  gethostname(hostname, sizeof(hostname) - 1);
-#elif defined(_WIN32)
-  const char* computer_name = getenv("COMPUTERNAME");
-  if (computer_name) {
-    snprintf(hostname, sizeof(hostname), "%s", computer_name);
-    return hostname;
+  if (gethostname(hostname, sizeof(hostname)) != 0) {
+    strcpy(hostname, "unknown");
   }
-
-  WORD w_version_requested = MAKEWORD(2, 2);
-  WSADATA wsa_data;
-  int err = WSAStartup(w_version_requested, &wsa_data);
-  if (err != 0) {
-    // Tell the user that we could not find a usable Winsock DLL.
-    cc_log("WSAStartup failed with error: %d", err);
-    return hostname;
-  }
-
-  if (LOBYTE(wsa_data.wVersion) != 2 || HIBYTE(wsa_data.wVersion) != 2) {
-    // Tell the user that we could not find a usable WinSock DLL.
-    cc_log("Could not find a usable version of Winsock.dll");
-    WSACleanup();
-    return hostname;
-  }
-
-  int result = gethostname(hostname, sizeof(hostname) - 1);
-  if (result != 0) {
-    LPVOID lp_msg_buf;
-    DWORD dw = WSAGetLastError();
-
-    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                    | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  NULL,
-                  dw,
-                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                  (LPTSTR)&lp_msg_buf,
-                  0,
-                  NULL);
-
-    LPVOID lp_display_buf = (LPVOID)LocalAlloc(
-      LMEM_ZEROINIT,
-      (lstrlen((LPCTSTR)lp_msg_buf) + lstrlen((LPCTSTR)__FILE__) + 200)
-        * sizeof(TCHAR));
-    _snprintf((LPTSTR)lp_display_buf,
-              LocalSize(lp_display_buf) / sizeof(TCHAR),
-              TEXT("%s failed with error %lu: %s"),
-              __FILE__,
-              dw,
-              (const char*)lp_msg_buf);
-
-    cc_log("can't get hostname OS returned error: %s", (char*)lp_display_buf);
-
-    LocalFree(lp_msg_buf);
-    LocalFree(lp_display_buf);
-  }
-  WSACleanup();
-#endif
-
   hostname[sizeof(hostname) - 1] = 0;
   return hostname;
 }
@@ -563,7 +281,7 @@ get_hostname(void)
 // Return a string to be passed to mkstemp to create a temporary file. Also
 // tries to cope with NFS by adding the local hostname.
 const char*
-tmp_string(void)
+tmp_string()
 {
   static char* ret;
   if (!ret) {
@@ -579,7 +297,7 @@ format(const char* format, ...)
   va_list ap;
   va_start(ap, format);
 
-  char* ptr = NULL;
+  char* ptr = nullptr;
   if (vasprintf(&ptr, format, ap) == -1) {
     fatal("Out of memory in format");
   }
@@ -646,7 +364,7 @@ x_malloc(size_t size)
   if (size == 0) {
     // malloc() may return NULL if size is zero, so always do this to make sure
     // that the code handles it regardless of platform.
-    return NULL;
+    return nullptr;
   }
   void* ret = malloc(size);
   if (!ret) {
@@ -697,7 +415,7 @@ void
 reformat(char** ptr, const char* format, ...)
 {
   char* saved = *ptr;
-  *ptr = NULL;
+  *ptr = nullptr;
 
   va_list ap;
   va_start(ap, format);
@@ -825,158 +543,6 @@ parse_size_with_suffix(const char* str, uint64_t* size)
   return true;
 }
 
-#if !defined(HAVE_REALPATH) && defined(_WIN32)                                 \
-  && !defined(HAVE_GETFINALPATHNAMEBYHANDLEW)
-static BOOL
-GetFileNameFromHandle(HANDLE file_handle, TCHAR* filename, WORD cch_filename)
-{
-  BOOL success = FALSE;
-
-  // Get the file size.
-  DWORD file_size_hi = 0;
-  DWORD file_size_lo = GetFileSize(file_handle, &file_size_hi);
-  if (file_size_lo == 0 && file_size_hi == 0) {
-    // Cannot map a file with a length of zero.
-    return FALSE;
-  }
-
-  // Create a file mapping object.
-  HANDLE file_map =
-    CreateFileMapping(file_handle, NULL, PAGE_READONLY, 0, 1, NULL);
-  if (!file_map) {
-    return FALSE;
-  }
-
-  // Create a file mapping to get the file name.
-  void* mem = MapViewOfFile(file_map, FILE_MAP_READ, 0, 0, 1);
-  if (mem) {
-    if (GetMappedFileName(GetCurrentProcess(), mem, filename, cch_filename)) {
-      // Translate path with device name to drive letters.
-      TCHAR temp[512];
-      temp[0] = '\0';
-
-      if (GetLogicalDriveStrings(512 - 1, temp)) {
-        TCHAR name[MAX_PATH];
-        TCHAR drive[3] = TEXT(" :");
-        BOOL found = FALSE;
-        TCHAR* p = temp;
-
-        do {
-          // Copy the drive letter to the template string.
-          *drive = *p;
-
-          // Look up each device name.
-          if (QueryDosDevice(drive, name, MAX_PATH)) {
-            size_t name_len = _tcslen(name);
-            if (name_len < MAX_PATH) {
-              found = _tcsnicmp(filename, name, name_len) == 0
-                      && *(filename + name_len) == _T('\\');
-              if (found) {
-                // Reconstruct filename using temp_file and replace device path
-                // with DOS path.
-                TCHAR temp_file[MAX_PATH];
-                _sntprintf(temp_file,
-                           MAX_PATH - 1,
-                           TEXT("%s%s"),
-                           drive,
-                           filename + name_len);
-                strcpy(filename, temp_file);
-              }
-            }
-          }
-
-          // Go to the next NULL character.
-          while (*p++) {
-            // Do nothing.
-          }
-        } while (!found && *p); // End of string.
-      }
-    }
-    success = TRUE;
-    UnmapViewOfFile(mem);
-  }
-
-  CloseHandle(file_map);
-  return success;
-}
-#endif
-
-// A sane realpath() function, trying to cope with stupid path limits and a
-// broken API. Caller frees.
-char*
-x_realpath(const char* path)
-{
-  long maxlen = path_max(path);
-  char* ret = static_cast<char*>(x_malloc(maxlen));
-  char* p;
-
-#if HAVE_REALPATH
-  p = realpath(path, ret);
-#elif defined(_WIN32)
-  if (path[0] == '/') {
-    path++; // Skip leading slash.
-  }
-  HANDLE path_handle = CreateFile(path,
-                                  GENERIC_READ,
-                                  FILE_SHARE_READ,
-                                  NULL,
-                                  OPEN_EXISTING,
-                                  FILE_ATTRIBUTE_NORMAL,
-                                  NULL);
-  if (INVALID_HANDLE_VALUE != path_handle) {
-#  ifdef HAVE_GETFINALPATHNAMEBYHANDLEW
-    GetFinalPathNameByHandle(path_handle, ret, maxlen, FILE_NAME_NORMALIZED);
-#  else
-    GetFileNameFromHandle(path_handle, ret, maxlen);
-#  endif
-    CloseHandle(path_handle);
-    p = ret + 4; // Strip \\?\ from the file name.
-  } else {
-    snprintf(ret, maxlen, "%s", path);
-    p = ret;
-  }
-#else
-  // Yes, there are such systems. This replacement relies on the fact that when
-  // we call x_realpath we only care about symlinks.
-  {
-    int len = readlink(path, ret, maxlen - 1);
-    if (len == -1) {
-      free(ret);
-      return NULL;
-    }
-    ret[len] = 0;
-    p = ret;
-  }
-#endif
-  if (p) {
-    p = x_strdup(p);
-    free(ret);
-    return p;
-  }
-  free(ret);
-  return NULL;
-}
-
-// A getcwd that will returns an allocated buffer.
-char*
-gnu_getcwd(void)
-{
-  unsigned size = 128;
-
-  while (true) {
-    char* buffer = (char*)x_malloc(size);
-    if (getcwd(buffer, size) == buffer) {
-      return buffer;
-    }
-    free(buffer);
-    if (errno != ERANGE) {
-      cc_log("getcwd error: %d (%s)", errno, strerror(errno));
-      return NULL;
-    }
-    size *= 2;
-  }
-}
-
 #if !defined(_WIN32) && !defined(HAVE_LOCALTIME_R)
 // localtime_r replacement. (Mingw-w64 has an inline localtime_r which is not
 // detected by AC_CHECK_FUNCS.)
@@ -991,30 +557,6 @@ localtime_r(const time_t* timep, struct tm* result)
     memset(result, 0, sizeof(*result));
     return NULL;
   }
-}
-#endif
-
-#ifndef HAVE_STRTOK_R
-// strtok_r replacement.
-char*
-strtok_r(char* str, const char* delim, char** saveptr)
-{
-  if (!str) {
-    str = *saveptr;
-  }
-  int len = strlen(str);
-  char* ret = strtok(str, delim);
-  if (ret) {
-    char* save = ret;
-    while (*save++) {
-      // Do nothing.
-    }
-    if ((len + 1) == (intptr_t)(save - str)) {
-      save--;
-    }
-    *saveptr = save;
-  }
-  return ret;
 }
 #endif
 
@@ -1061,9 +603,10 @@ create_tmp_file(char** fname, const char* mode)
   return file;
 }
 
-// Return current user's home directory, or NULL if it can't be determined.
+// Return current user's home directory, or throw FatalError if it can't be
+// determined.
 const char*
-get_home_directory(void)
+get_home_directory()
 {
   const char* p = getenv("HOME");
   if (p) {
@@ -1083,35 +626,7 @@ get_home_directory(void)
     }
   }
 #endif
-  return NULL;
-}
-
-// Get the current directory by reading $PWD. If $PWD isn't sane, gnu_getcwd()
-// is used. Caller frees.
-char*
-get_cwd(void)
-{
-  char* cwd = gnu_getcwd();
-  if (!cwd) {
-    return NULL;
-  }
-
-  char* pwd = getenv("PWD");
-  if (!pwd) {
-    return cwd;
-  }
-
-  auto st_pwd = Stat::stat(pwd);
-  auto st_cwd = Stat::stat(cwd);
-  if (!st_pwd || !st_cwd) {
-    return cwd;
-  }
-  if (st_pwd.device() == st_cwd.device() && st_pwd.inode() == st_cwd.inode()) {
-    free(cwd);
-    return x_strdup(pwd);
-  } else {
-    return cwd;
-  }
+  fatal("Could not determine home directory from $HOME or getpwuid(3)");
 }
 
 // Check whether s1 and s2 have the same executable name.
@@ -1128,93 +643,6 @@ same_executable_name(const char* s1, const char* s2)
   return eq;
 #else
   return str_eq(s1, s2);
-#endif
-}
-
-// Compute the length of the longest directory path that is common to two
-// paths. s1 is assumed to be the path to a directory.
-size_t
-common_dir_prefix_length(const char* s1, const char* s2)
-{
-  const char* p1 = s1;
-  const char* p2 = s2;
-
-  while (*p1 && *p2 && *p1 == *p2) {
-    ++p1;
-    ++p2;
-  }
-  while ((*p1 && *p1 != '/') || (*p2 && *p2 != '/')) {
-    p1--;
-    p2--;
-  }
-  if (!*p1 && !*p2 && p2 == s2 + 1) {
-    // Special case for s1 and s2 both being "/".
-    return 0;
-  }
-  return p1 - s1;
-}
-
-// Compute a relative path from from (an absolute path to a directory) to to (a
-// path). Assumes that both from and to are well-formed and canonical. Caller
-// frees.
-char*
-get_relative_path(const char* from, const char* to)
-{
-  size_t common_prefix_len;
-  char* result;
-
-  assert(from && is_absolute_path(from));
-  assert(to);
-
-  if (!*to || !is_absolute_path(to)) {
-    return x_strdup(to);
-  }
-
-#ifdef _WIN32
-  // Paths can be escaped by a slash for use with -isystem.
-  if (from[0] == '/') {
-    from++;
-  }
-  if (to[0] == '/') {
-    to++;
-  }
-  // Both paths are absolute, drop the drive letters.
-  assert(from[0] == to[0]); // Assume the same drive letter.
-  from += 2;
-  to += 2;
-#endif
-
-  result = x_strdup("");
-  common_prefix_len = common_dir_prefix_length(from, to);
-  if (common_prefix_len > 0 || !str_eq(from, "/")) {
-    const char* p;
-    for (p = from + common_prefix_len; *p; p++) {
-      if (*p == '/') {
-        reformat(&result, "../%s", result);
-      }
-    }
-  }
-  if (strlen(to) > common_prefix_len) {
-    reformat(&result, "%s%s", result, to + common_prefix_len + 1);
-  }
-  for (int i = strlen(result) - 1; i >= 0 && result[i] == '/'; i--) {
-    result[i] = '\0';
-  }
-  if (str_eq(result, "")) {
-    free(result);
-    result = x_strdup(".");
-  }
-  return result;
-}
-
-// Return whether path is absolute.
-bool
-is_absolute_path(const char* path)
-{
-#ifdef _WIN32
-  return path[0] && path[1] == ':';
-#else
-  return path[0] == '/';
 #endif
 }
 
@@ -1239,7 +667,7 @@ void
 update_mtime(const char* path)
 {
 #ifdef HAVE_UTIMES
-  utimes(path, NULL);
+  utimes(path, nullptr);
 #else
   utime(path, NULL);
 #endif
@@ -1267,124 +695,20 @@ x_rename(const char* oldpath, const char* newpath)
   return rename(oldpath, newpath);
 #else
   // Windows' rename() refuses to overwrite an existing file.
-  unlink(newpath); // Not x_unlink, as x_unlink calls x_rename.
   // If the function succeeds, the return value is nonzero.
-  if (MoveFileA(oldpath, newpath) == 0) {
-    LPVOID lp_msg_buf;
-    DWORD dw = GetLastError();
-    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                    | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  NULL,
-                  dw,
-                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                  (LPTSTR)&lp_msg_buf,
-                  0,
-                  NULL);
-
-    LPVOID lp_display_buf = (LPVOID)LocalAlloc(
-      LMEM_ZEROINIT,
-      (lstrlen((LPCTSTR)lp_msg_buf) + lstrlen((LPCTSTR)__FILE__) + 40)
-        * sizeof(TCHAR));
-    _snprintf((LPTSTR)lp_display_buf,
-              LocalSize(lp_display_buf) / sizeof(TCHAR),
-              TEXT("%s failed with error %lu: %s"),
-              __FILE__,
-              dw,
-              (const char*)lp_msg_buf);
-
-    cc_log("can't rename file %s to %s OS returned error: %s",
+  if (MoveFileExA(oldpath, newpath, MOVEFILE_REPLACE_EXISTING) == 0) {
+    DWORD error = GetLastError();
+    cc_log("failed to rename %s to %s: %s (%lu)",
            oldpath,
            newpath,
-           (char*)lp_display_buf);
-
-    LocalFree(lp_msg_buf);
-    LocalFree(lp_display_buf);
+           win32_error_message(error).c_str(),
+           error);
     return -1;
   } else {
     return 0;
   }
 #endif
 }
-
-// Remove path, NFS hazardous. Use only for temporary files that will not exist
-// on other systems. That is, the path should include tmp_string().
-int
-tmp_unlink(const char* path)
-{
-  cc_log("Unlink %s", path);
-  int rc = unlink(path);
-  if (rc) {
-    cc_log("Unlink failed: %s", strerror(errno));
-  }
-  return rc;
-}
-
-static int
-do_x_unlink(const char* path, bool log_failure)
-{
-  int saved_errno = 0;
-
-  // If path is on an NFS share, unlink isn't atomic, so we rename to a temp
-  // file. We don't care if the temp file is trashed, so it's always safe to
-  // unlink it first.
-  char* tmp_name = format("%s.rm.%s", path, tmp_string());
-
-  int result = 0;
-  if (x_rename(path, tmp_name) == -1) {
-    result = -1;
-    saved_errno = errno;
-    goto out;
-  }
-  if (unlink(tmp_name) == -1) {
-    // If it was released in a race, that's OK.
-    if (errno != ENOENT && errno != ESTALE) {
-      result = -1;
-      saved_errno = errno;
-    }
-  }
-
-out:
-  if (result == 0 || log_failure) {
-    cc_log("Unlink %s via %s", path, tmp_name);
-    if (result != 0 && log_failure) {
-      cc_log("x_unlink failed: %s", strerror(saved_errno));
-    }
-  }
-  free(tmp_name);
-  errno = saved_errno;
-  return result;
-}
-
-// Remove path, NFS safe, log both successes and failures.
-int
-x_unlink(const char* path)
-{
-  return do_x_unlink(path, true);
-}
-
-// Remove path, NFS safe, only log successes.
-int
-x_try_unlink(const char* path)
-{
-  return do_x_unlink(path, false);
-}
-
-#ifndef _WIN32
-// Like readlink() but returns the string or NULL on failure. Caller frees.
-char*
-x_readlink(const char* path)
-{
-  long maxlen = path_max(path);
-  char* buf = static_cast<char*>(x_malloc(maxlen));
-  ssize_t len = readlink(path, buf, maxlen - 1);
-  if (len == -1) {
-    free(buf);
-    return NULL;
-  }
-  buf[len] = 0;
-  return buf;
-}
-#endif
 
 // Reads the content of a file. Size hint 0 means no hint. Returns true on
 // success, otherwise false.
@@ -1394,7 +718,8 @@ read_file(const char* path, size_t size_hint, char** data, size_t* size)
   if (size_hint == 0) {
     size_hint = Stat::stat(path, Stat::OnError::log).size();
   }
-  size_hint = (size_hint < 1024) ? 1024 : size_hint;
+  // +1 to be able to detect EOF in the first read call
+  size_hint = (size_hint < 1024) ? 1024 : size_hint + 1;
 
   int fd = open(path, O_RDONLY | O_BINARY);
   if (fd == -1) {
@@ -1402,26 +727,30 @@ read_file(const char* path, size_t size_hint, char** data, size_t* size)
   }
   size_t allocated = size_hint;
   *data = static_cast<char*>(x_malloc(allocated));
-  int ret;
+  ssize_t ret;
   size_t pos = 0;
   while (true) {
     if (pos > allocated / 2) {
       allocated *= 2;
       *data = static_cast<char*>(x_realloc(*data, allocated));
     }
-    ret = read(fd, *data + pos, allocated - pos);
+    const size_t max_read = allocated - pos;
+    ret = read(fd, *data + pos, max_read);
     if (ret == 0 || (ret == -1 && errno != EINTR)) {
       break;
     }
     if (ret > 0) {
       pos += ret;
+      if (static_cast<size_t>(ret) < max_read) {
+        break;
+      }
     }
   }
   close(fd);
   if (ret == -1) {
     cc_log("Failed reading %s", path);
     free(*data);
-    *data = NULL;
+    *data = nullptr;
     return false;
   }
 
@@ -1441,7 +770,7 @@ read_text_file(const char* path, size_t size_hint)
     data[size] = '\0';
     return data;
   } else {
-    return NULL;
+    return nullptr;
   }
 }
 
@@ -1500,17 +829,17 @@ char*
 subst_env_in_string(const char* str, char** errmsg)
 {
   assert(errmsg);
-  *errmsg = NULL;
+  *errmsg = nullptr;
 
   char* result = x_strdup("");
   const char* p = str; // Interval start.
   const char* q = str; // Interval end.
-  for (q = str; *q; ++q) {
+  for (; *q; ++q) {
     if (*q == '$') {
       reformat(&result, "%s%.*s", result, (int)(q - p), p);
       if (!expand_variable(&q, &result, errmsg)) {
         free(result);
-        return NULL;
+        return nullptr;
       }
       p = q + 1;
     }
@@ -1533,19 +862,13 @@ set_cloexec_flag(int fd)
 }
 
 double
-time_seconds(void)
+time_seconds()
 {
 #ifdef HAVE_GETTIMEOFDAY
   struct timeval tv;
-  gettimeofday(&tv, NULL);
+  gettimeofday(&tv, nullptr);
   return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 #else
   return (double)time(NULL);
 #endif
-}
-
-std::string
-from_cstr(const char* str)
-{
-  return str ? str : std::string{};
 }

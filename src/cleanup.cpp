@@ -21,6 +21,8 @@
 
 #include "CacheFile.hpp"
 #include "Config.hpp"
+#include "Util.hpp"
+#include "logging.hpp"
 #include "stats.hpp"
 
 #include <algorithm>
@@ -32,7 +34,7 @@ delete_file(const std::string& path,
             uint64_t* cache_size,
             uint32_t* files_in_cache)
 {
-  bool deleted = x_try_unlink(path.c_str()) == 0;
+  bool deleted = Util::unlink_safe(path, Util::UnlinkLog::ignore_failure);
   if (!deleted && errno != ENOENT && errno != ESTALE) {
     cc_log("Failed to unlink %s (%s)", path.c_str(), strerror(errno));
   } else if (cache_size && files_in_cache) {
@@ -60,7 +62,7 @@ clean_up_dir(const std::string& subdir,
 
   uint64_t cache_size = 0;
   uint32_t files_in_cache = 0;
-  time_t current_time = time(NULL);
+  time_t current_time = time(nullptr);
 
   for (size_t i = 0; i < files.size();
        ++i, progress_receiver(1.0 / 3 + 1.0 * i / files.size() / 3)) {
@@ -74,7 +76,7 @@ clean_up_dir(const std::string& subdir,
     // Delete any tmp files older than 1 hour right away.
     if (file->lstat().mtime() + 3600 < current_time
         && Util::base_name(file->path()).find(".tmp.") != std::string::npos) {
-      x_unlink(file->path().c_str());
+      Util::unlink_tmp(file->path());
       continue;
     }
 
@@ -173,7 +175,7 @@ wipe_dir(const std::string& subdir,
     subdir, [&](double progress) { progress_receiver(progress / 2); }, files);
 
   for (size_t i = 0; i < files.size(); ++i) {
-    x_unlink(files[i]->path().c_str());
+    Util::unlink_safe(files[i]->path());
     progress_receiver(0.5 + 0.5 * i / files.size());
   }
 

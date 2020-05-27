@@ -17,6 +17,15 @@ base_tests() {
     expect_equal_object_files reference_test1.o test1.o
 
     # -------------------------------------------------------------------------
+    TEST "Version output readable"
+
+    # The exact output is not tested, but at least it's something human readable
+    # and not random memory.
+    if [ $($CCACHE --version | grep -c '^ccache version [a-zA-Z0-9_./-]*$') -ne 1 ]; then
+        test_failed "Unexpected output of --version"
+    fi
+
+    # -------------------------------------------------------------------------
     TEST "Debug option"
 
     $CCACHE_COMPILE -c test1.c -g
@@ -97,7 +106,10 @@ base_tests() {
     TEST "Couldn't find the compiler"
 
     $CCACHE blahblah -c test1.c 2>/dev/null
-    expect_stat "couldn't find the compiler" 1
+    exit_code=$?
+    if [ $exit_code -ne 1 ]; then
+        test_failed "Expected exit code to be 1, actual value $exit_code"
+    fi
 
     # -------------------------------------------------------------------------
     TEST "Bad compiler arguments"
@@ -294,6 +306,24 @@ base_tests() {
     expect_stat 'files in cache' 1
 
     # -------------------------------------------------------------------------
+    TEST "CCACHE_DEBUG"
+
+    unset CCACHE_LOGFILE
+    unset CCACHE_NODIRECT
+    CCACHE_DEBUG=1 $CCACHE_COMPILE -c test1.c
+    if ! grep -q Result: test1.o.ccache-log; then
+        test_failed "Unexpected data in <obj>.ccache-log"
+    fi
+    if ! grep -q "PREPROCESSOR MODE" test1.o.ccache-input-text; then
+        test_failed "Unexpected data in <obj>.ccache-input-text"
+    fi
+    for ext in c p d; do
+        if ! [ -f test1.o.ccache-input-$ext ]; then
+            test_failed "<obj>.ccache-input-$ext missing"
+        fi
+    done
+
+    # -------------------------------------------------------------------------
     TEST "CCACHE_DISABLE"
 
     CCACHE_DISABLE=1 $CCACHE_COMPILE -c test1.c 2>/dev/null
@@ -328,6 +358,23 @@ base_tests() {
     CCACHE_NOSTATS=1 $CCACHE_COMPILE -c test1.c -O -O
     expect_stat 'cache hit (preprocessed)' 0
     expect_stat 'cache miss' 0
+
+    # -------------------------------------------------------------------------
+    TEST "stats file forward compatibility"
+
+    mkdir -p "$CCACHE_DIR/4/"
+    stats_file="$CCACHE_DIR/4/stats"
+    touch "$CCACHE_DIR/timestamp_reference"
+
+    for i in `seq 101`; do
+       echo $i
+    done > "$stats_file"
+
+    expect_stat 'cache miss' 5
+    $CCACHE_COMPILE -c test1.c
+    expect_stat 'cache miss' 6
+    expect_file_contains "$stats_file" 101
+    expect_file_newer_than "$stats_file" "$CCACHE_DIR/timestamp_reference"
 
     # -------------------------------------------------------------------------
     TEST "CCACHE_RECACHE"
@@ -854,9 +901,6 @@ EOF
     chmod +x compiler.sh
 
     CCACHE_COMPILERCHECK="unknown_command" $CCACHE ./compiler.sh -c test1.c 2>/dev/null
-    if [ "$?" -eq 0 ]; then
-        test_failed "Expected failure running unknown_command to verify compiler but was success"
-    fi
     expect_stat 'compiler check failed' 1
 
     # -------------------------------------------------------------------------
@@ -907,6 +951,34 @@ EOF
     $REAL_COMPILER -c -Wall -W -c stderr.c 2>reference_stderr.txt
     $CCACHE_COMPILE -Wall -W -c stderr.c 2>stderr.txt
     expect_equal_files reference_stderr.txt stderr.txt
+
+    # -------------------------------------------------------------------------
+    TEST "Merging stderr"
+
+    cat >compiler.sh <<EOF
+#!/bin/sh
+if [ \$1 = -E ]; then
+    echo preprocessed
+    printf "[%s]" cpp_stderr >&2
+else
+    echo object >test1.o
+    printf "[%s]" cc_stderr >&2
+fi
+EOF
+    chmod +x compiler.sh
+
+    unset CCACHE_NOCPP2
+    stderr=$($CCACHE ./compiler.sh -c test1.c 2>stderr)
+    expect_stat 'cache hit (preprocessed)' 0
+    expect_stat 'cache miss' 1
+    expect_stat 'files in cache' 1
+    expect_file_content stderr "[cc_stderr]"
+
+    stderr=$(CCACHE_NOCPP2=1 $CCACHE ./compiler.sh -c test1.c 2>stderr)
+    expect_stat 'cache hit (preprocessed)' 0
+    expect_stat 'cache miss' 2
+    expect_stat 'files in cache' 2
+    expect_file_content stderr "[cpp_stderr][cc_stderr]"
 
     # -------------------------------------------------------------------------
     TEST "--zero-stats"
@@ -1076,52 +1148,6 @@ EOF
     expect_stat 'cache hit (preprocessed)' 1
     expect_stat 'cache miss' 1
 
-    # -------------------------------------------------------------------------
-if ! $HOST_OS_WINDOWS && ! $HOST_OS_CYGWIN; then
-    TEST "Symlink to source directory"
-
-    mkdir dir
-    cd dir
-    mkdir -p d1/d2
-    echo '#define A "OK"' >d1/h.h
-    cat <<EOF >d1/d2/c.c
-#include <stdio.h>
-#include "../h.h"
-int main() { printf("%s\n", A); }
-EOF
-    echo '#define A "BUG"' >h.h
-    ln -s d1/d2 d3
-
-    CCACHE_BASEDIR=/ $CCACHE_COMPILE -c $PWD/d3/c.c
-    $REAL_COMPILER c.o -o c
-    if [ "$(./c)" != OK ]; then
-        test_failed "Incorrect header file used"
-    fi
-
-fi
-    # -------------------------------------------------------------------------
-if ! $HOST_OS_WINDOWS && ! $HOST_OS_CYGWIN; then
-    TEST "Symlink to source file"
-
-    mkdir dir
-    cd dir
-    mkdir d
-    echo '#define A "BUG"' >d/h.h
-    cat <<EOF >d/c.c
-#include <stdio.h>
-#include "h.h"
-int main() { printf("%s\n", A); }
-EOF
-    echo '#define A "OK"' >h.h
-    ln -s d/c.c c.c
-
-    CCACHE_BASEDIR=/ $CCACHE_COMPILE -c $PWD/c.c
-    $REAL_COMPILER c.o -o c
-    if [ "$(./c)" != OK ]; then
-        test_failed "Incorrect header file used"
-    fi
-
-fi
     # -------------------------------------------------------------------------
 if ! $HOST_OS_WINDOWS; then
     TEST ".incbin"
